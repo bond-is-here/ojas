@@ -1,0 +1,2 @@
+CONNECTIONS_ENCRYPTION_KEY=replace-with-64-random-hex-characters
+SITE_ORIGIN=http://localhost:3000

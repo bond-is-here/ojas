@@ -1,0 +1,54 @@
+import {
+  sqliteTable,
+  text,
+  integer,
+  real,
+  primaryKey,
+  index,
+} from 'drizzle-orm/sqlite-core';
+export const connections = sqliteTable(
+  'connections',
+  {
+    userId: text('user_id').notNull(),
+    provider: text('provider').notNull(),
+    clientId: text('client_id'),
+    secretCipher: text('secret_cipher'),
+    tokenCipher: text('token_cipher'),
+    expiresAt: integer('expires_at'),
+    status: text('status').notNull().default('not_connected'),
+    lastSync: text('last_sync'),
+    lastError: text('last_error'),
+    summary: text('summary'),
+    syncUntil: integer('sync_until').notNull().default(0),
+    revision: text('revision').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.provider] })],
+);
+export const oauthStates = sqliteTable('oauth_states', {
+  stateHash: text('state_hash').primaryKey(),
+  userId: text('user_id').notNull(),
+  provider: text('provider').notNull(),
+  revision: text('revision').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
+export const sourceEntries = sqliteTable(
+  'source_entries',
+  {
+    userId: text('user_id').notNull(),
+    provider: text('provider').notNull(),
+    recordId: text('record_id').notNull(),
+    day: text('day').notNull(),
+    time: text('time').notNull(),
+    type: text('type').notNull(),
+    amount: real('amount').notNull(),
+    title: text('title').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.provider, t.recordId] }),
+    index('idx_source_entries_user_day').on(t.userId, t.day),
+  ],
+);
+export const syncPreferences = sqliteTable('sync_preferences', {
+  userId: text('user_id').primaryKey(),
+  preferences: text('preferences').notNull(),
+});
