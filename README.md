@@ -26,7 +26,20 @@ AI is an extension of Ojas—not a requirement. The core experience should remai
 
 ## Project status
 
-Ojas is at the beginning of its build. This repository will become the home for the product as the experience takes shape.
+The working website lives in [`web/`](web/README.md). Its minimal dashboard brings together a Three.js vitality halo and four daily essentials: movement, sleep, nourishment, and hydration. Detailed charts, editable goals, a journal, and a breathing timer are available when needed.
+
+Connections supports Apple Health export imports and OAuth integrations for WHOOP and Oura. WHOOP and Oura require developer-app credentials and account authorization before live sync. Imported daily totals and connection settings are saved per signed-in account; manual entries remain in the current browser. Medical records and AI integrations remain part of the longer-term vision.
+
+To run it locally with Node.js 22.13+ and pnpm:
+
+```sh
+cd web
+pnpm install
+cp .dev.vars.example .dev.vars
+# Set a random 64-character hexadecimal encryption key in .dev.vars.
+pnpm db:local
+pnpm dev
+```
 
 ## License
 
