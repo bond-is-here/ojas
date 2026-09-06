@@ -69,6 +69,11 @@ export async function getConnections(
         'SELECT provider,COUNT(*) AS count FROM source_entries WHERE user_id = ? GROUP BY provider',
       )
       .bind(user),
+    db
+      .prepare(
+        'SELECT provider,COUNT(*) AS count FROM source_workouts WHERE user_id=? GROUP BY provider',
+      )
+      .bind(user),
   ]);
   const rows = results[0].results as unknown as ConnectionRow[];
   const entries = results[1].results.map((raw) => {
@@ -113,7 +118,11 @@ export async function getConnections(
         ? (JSON.parse(row.summary) as Record<string, string | number>)
         : null,
       configured: !!row?.client_id,
-      count: typeof count === 'number' ? count : 0,
+      count:
+        (typeof count === 'number' ? count : 0) +
+        ((results[4].results as { provider: string; count: number }[]).find(
+          (r) => r.provider === provider,
+        )?.count || 0),
       ...(isOAuthProvider(provider)
         ? { callbackUrl: callbackUrl(provider) }
         : {}),
@@ -337,6 +346,22 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
     // One atomic batch ensures failed or partial provider requests never replace good history.
     const results = await db.batch([
       ...data.entries.map((e) => insertEntry(user, e, connection.revision)),
+      ...data.workouts.map((w) =>
+        db
+          .prepare(
+            'INSERT INTO source_workouts(user_id,provider,id,day,payload) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=?) ON CONFLICT(user_id,provider,id) DO UPDATE SET day=excluded.day,payload=excluded.payload',
+          )
+          .bind(
+            user,
+            provider,
+            w.id,
+            w.day,
+            JSON.stringify(w),
+            user,
+            provider,
+            connection.revision,
+          ),
+      ),
       db
         .prepare(
           "UPDATE connections SET status='connected',last_sync=?,last_error=NULL,summary=?,sync_until=0 WHERE user_id=? AND provider=? AND revision=?",
@@ -351,7 +376,7 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
     ]);
     if (!results[results.length - 1].meta.changes)
       throw new ApiError('The connection changed during sync.', 409);
-    return { count: data.entries.length };
+    return { count: data.entries.length + data.workouts.length };
   } catch (error) {
     const message =
       error instanceof ApiError
@@ -363,7 +388,9 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
       )
       .bind(
         message,
-        error instanceof ApiError && [401, 403, 409].includes(error.status) ? 1 : 0,
+        error instanceof ApiError && [401, 403, 409].includes(error.status)
+          ? 1
+          : 0,
         user,
         provider,
         connection.revision,
@@ -415,6 +442,9 @@ export async function disconnect(
     statements.push(
       db
         .prepare('DELETE FROM source_entries WHERE user_id=? AND provider=?')
+        .bind(user, provider),
+      db
+        .prepare('DELETE FROM source_workouts WHERE user_id=? AND provider=?')
         .bind(user, provider),
       db
         .prepare(

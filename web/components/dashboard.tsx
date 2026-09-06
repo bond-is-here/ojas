@@ -8,6 +8,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Droplets,
+  Dumbbell,
+  Info,
+  RefreshCw,
+  CircleDot,
+  Watch,
+  Activity,
   Flame,
   Footprints,
   LayoutGrid,
@@ -18,7 +24,6 @@ import {
   Play,
   Plus,
   Settings2,
-  ShieldCheck,
   Trash2,
   Utensils,
   Wind,
@@ -47,6 +52,9 @@ import {
   BreathingMoment,
 } from '@/components/health-dialogs';
 import ConnectionsPanel from '@/components/connections-panel';
+import QuickCapture from '@/components/quick-capture';
+import TrainingPanel from '@/components/training-panel';
+import { useTraining } from '@/hooks/use-training';
 import { useConnections } from '@/hooks/use-connections';
 import { mergeSourceEntries, SOURCE_NAMES } from '@/lib/connections';
 import {
@@ -75,6 +83,7 @@ const ICONS = {
 };
 const NAV = [
   { name: 'Overview', icon: LayoutGrid },
+  { name: 'Training', icon: Dumbbell },
   { name: 'Activity', icon: Footprints },
   { name: 'Nutrition', icon: Utensils },
   { name: 'Sleep', icon: Moon },
@@ -87,6 +96,7 @@ const HEADINGS: Record<string, string> = {
   Nutrition: 'Nourishment',
   Sleep: 'Rest',
   Connections: 'Connections',
+  Training: 'Training',
 };
 export default function Dashboard({ initialDay }: { initialDay: string }) {
   const [section, setSection] = useState('Overview');
@@ -100,8 +110,17 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
   const [logType, setLogType] = useState<EntryType>('activity');
   const [notice, setNotice] = useState('');
   const [removed, setRemoved] = useState<Entry | null>(null);
+  const [lastAdded, setLastAdded] = useState<string | null>(null);
   const sourcesApplied = useRef(false);
-  const connections = useConnections(day);
+  const training = useTraining(day);
+  const connections = useConnections(
+    day,
+    !training.loading && !training.error && training.data.preferences.autoSync,
+  );
+  const refreshTraining = training.refresh;
+  useEffect(() => {
+    if (!connections.busy) void refreshTraining().catch(() => undefined);
+  }, [connections.busy, refreshTraining]);
   /* oxlint-disable react/react-compiler -- Hydrate browser and server data after SSR and report storage failures. */
   useEffect(() => {
     const local = dateKey(new Date());
@@ -197,6 +216,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
         : `${TYPE_META[entry.type].label} added.`,
     );
     setRemoved(null);
+    setLastAdded(entry.id);
     setModal(null);
   };
   const addWater = () => {
@@ -216,6 +236,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
       entries: w.entries.filter((e) => e.id !== entry.id),
     }));
     setRemoved(entry);
+    setLastAdded(null);
     setNotice('Entry removed.');
   };
   const goalStatus =
@@ -232,8 +253,8 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
   };
   return (
     <SidebarProvider
-      className="minimal-ojas"
-      style={{ '--sidebar-width': '190px' } as CSSProperties}
+      className="minimal-ojas studio-ojas"
+      style={{ '--sidebar-width': '88px' } as CSSProperties}
     >
       <a href="#daily-content" className="skip-link">
         Skip to dashboard
@@ -248,7 +269,9 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
             <span className="brand-mark">
               <Leaf size={20} strokeWidth={1.5} />
             </span>
-            ojas<span className="brand-period">.</span>
+            <span className="brand-word">
+              ojas<span className="brand-period">.</span>
+            </span>
           </button>
         </SidebarHeader>
         <SidebarContent className="nav-content">
@@ -273,22 +296,52 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
         <header className="topbar">
           <div className="breadcrumb">
             <SidebarTrigger className="mobile-trigger" />
-            <span className="workspace-wordmark">YOUR HEALTH</span>
+            <span className="workspace-wordmark">
+              ojas<span>.</span>
+            </span>
           </div>
           <div className="topbar-right">
+            <div className="source-orbit" aria-label="Health sources">
+              {(
+                [
+                  ['apple-health', Watch, 'Apple Health'],
+                  ['whoop', Activity, 'WHOOP'],
+                  ['oura', CircleDot, 'Oura'],
+                ] as const
+              ).map(([id, Icon, name]) => (
+                <button
+                  key={id}
+                  className={
+                    connected.some((c) => c.provider === id)
+                      ? 'source-connected'
+                      : ''
+                  }
+                  onClick={() => setSection('Connections')}
+                  aria-label={`Manage ${name}`}
+                  title={name}
+                >
+                  <Icon size={18} />
+                </button>
+              ))}
+            </div>
             <button
-              className="sync-status-pill"
+              className="icon-control sync-button"
+              aria-label={
+                connections.busy ? 'Syncing sources' : 'Open connections'
+              }
+              title={connections.busy ? 'Syncing' : 'Connections'}
               onClick={() => setSection('Connections')}
             >
-              <span className={connected.length ? 'online' : ''} />
-              {connected.length
-                ? `${connected.length} sources connected`
-                : 'Connect your sources'}
-              <ArrowUpRight size={13} />
+              <RefreshCw size={16} className={connections.busy ? 'spin' : ''} />
             </button>
-            <span className="topbar-divider" />
-            <ShieldCheck size={15} />
-            <span>Private to you</span>
+            <button
+              className="profile-orb"
+              aria-label="Goals and preferences"
+              title="Preferences"
+              onClick={() => setModal('preferences')}
+            >
+              Y
+            </button>
           </div>
         </header>
         <main className="main-content" id="daily-content">
@@ -311,7 +364,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                 </p>
               )}
             </div>
-            {section !== 'Connections' && (
+            {section !== 'Connections' && section !== 'Training' && (
               <div className="heading-actions">
                 <div className="date-controls">
                   <button
@@ -347,7 +400,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                   onClick={() => openLog(metric)}
                 >
                   <Plus size={16} />
-                  Log entry
+                  Log
                 </button>
               </div>
             )}
@@ -361,6 +414,20 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
             <output className="notice" aria-live="polite">
               <Check size={15} />
               {notice}
+              {lastAdded && (
+                <button
+                  onClick={() => {
+                    setWorkspace((w) => ({
+                      ...w,
+                      entries: w.entries.filter((e) => e.id !== lastAdded),
+                    }));
+                    setLastAdded(null);
+                    setNotice('Entry undone.');
+                  }}
+                >
+                  Undo
+                </button>
+              )}
               {removed && (
                 <button
                   onClick={() => {
@@ -389,95 +456,80 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
               controller={connections}
               onImported={() => setWorkspace((w) => ({ ...w, demo: false }))}
             />
+          ) : section === 'Training' ? (
+            <TrainingPanel controller={training} day={day} />
           ) : (
             <>
+              <QuickCapture
+                entries={workspace.entries}
+                day={day}
+                enabled={ready}
+                onSave={addEntry}
+                onDetails={openLog}
+              />
               {section === 'Overview' ? (
                 <>
-                  <section className="overview-focus">
-                    <div className="focus-score">
-                      <span className="focus-label">DAILY BALANCE</span>
-                      <div className="focus-number">
-                        {score}
-                        <span>/100</span>
-                      </div>
-                      <div className="focus-state">
-                        <i />
-                        {goalStatus}
-                      </div>
-                      <button
-                        className="text-link"
-                        onClick={() => setModal('balance')}
-                      >
-                        How it’s calculated
-                        <ArrowUpRight size={14} />
-                      </button>
-                    </div>
-                    <div className="focus-halo">
-                      <VitalityHalo paused={!workspace.motion} />
-                      <div className="halo-center">
-                        <span>ojas</span>
-                        <small>IN HARMONY</small>
-                      </div>
-                    </div>
-                    <div className="focus-right">
-                      <button
-                        className="halo-pause"
-                        onClick={() =>
-                          setWorkspace((w) => ({ ...w, motion: !w.motion }))
-                        }
-                        aria-label={
-                          workspace.motion
-                            ? 'Pause halo animation'
-                            : 'Resume halo animation'
-                        }
-                      >
-                        {workspace.motion ? (
-                          <Pause size={14} />
-                        ) : (
-                          <Play size={14} />
-                        )}
-                      </button>
-                      <div className="focus-sources">
-                        <span className="focus-label">YOUR SIGNALS</span>
-                        {connected.length ? (
-                          <>
-                            <p>
-                              {connected
-                                .map((c) => SOURCE_NAMES[c.provider])
-                                .join(' + ')}
-                            </p>
-                            <span>Connected to your day.</span>
-                          </>
-                        ) : (
-                          <>
-                            <p>No sources connected</p>
-                            <span>Apple Health, WHOOP, Oura.</span>
-                          </>
-                        )}
+                  <div className="today-grid">
+                    <section className="overview-focus">
+                      <div className="balance-top">
+                        <span>Daily balance</span>
                         <button
-                          className="text-link"
-                          onClick={() => setSection('Connections')}
+                          className="icon-control"
+                          onClick={() => setModal('balance')}
+                          aria-label="How daily balance is calculated"
+                          title="About your balance score"
                         >
-                          {connected.length
-                            ? 'Manage sources'
-                            : 'Connect a source'}
-                          <ArrowUpRight size={14} />
+                          <Info size={16} />
                         </button>
                       </div>
-                      <button
-                        className="breathe-shortcut"
-                        onClick={() => setModal('breathing')}
-                      >
-                        <Wind size={17} />
-                        Take a breath
-                        <ArrowRight size={14} />
-                      </button>
-                    </div>
-                  </section>
+                      <div className="focus-halo">
+                        <VitalityHalo paused={!workspace.motion} />
+                        <div className="halo-center">
+                          <strong>
+                            {score}
+                            <small>/100</small>
+                          </strong>
+                          <span>{goalStatus}</span>
+                        </div>
+                      </div>
+                      <div className="balance-bottom">
+                        <button
+                          className="icon-control"
+                          onClick={() =>
+                            setWorkspace((w) => ({ ...w, motion: !w.motion }))
+                          }
+                          aria-label={
+                            workspace.motion
+                              ? 'Pause halo animation'
+                              : 'Resume halo animation'
+                          }
+                        >
+                          {workspace.motion ? (
+                            <Pause size={15} />
+                          ) : (
+                            <Play size={15} />
+                          )}
+                        </button>
+                        <button
+                          className="breathe-shortcut"
+                          onClick={() => setModal('breathing')}
+                        >
+                          <Wind size={16} />
+                          Breathe
+                          <ArrowUpRight size={13} />
+                        </button>
+                      </div>
+                    </section>
+                    <TrainingPanel controller={training} day={day} compact />
+                  </div>
                   <div className="metric-grid essential-metrics">
                     <Metric
                       label="Movement"
                       type="activity"
+                      completion={progress(
+                        values.activity,
+                        workspace.goals.activity,
+                      )}
                       value={values.activity.toLocaleString('en-US')}
                       unit="steps"
                       note={sourceNote(
@@ -490,6 +542,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                     <Metric
                       label="Sleep"
                       type="sleep"
+                      completion={progress(values.sleep, workspace.goals.sleep)}
                       value={formatAmount('sleep', values.sleep)}
                       unit=""
                       note={sourceNote(
@@ -500,8 +553,12 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                       data={[]}
                     />
                     <Metric
-                      label="Nourishment"
+                      label="Food"
                       type="nutrition"
+                      completion={progress(
+                        values.nutrition,
+                        workspace.goals.nutrition,
+                      )}
                       value={Math.round(values.nutrition).toLocaleString(
                         'en-US',
                       )}
@@ -514,8 +571,9 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                       data={[]}
                     />
                     <Metric
-                      label="Hydration"
+                      label="Water"
                       type="water"
+                      completion={progress(values.water, workspace.goals.water)}
                       value={String(Number((values.water / 1000).toFixed(2)))}
                       unit="L"
                       note={sourceNote(
@@ -581,7 +639,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
               )}
               <section className="panel recent-panel">
                 <div className="section-title">
-                  <h2>Recent entries</h2>
+                  <h2>Today’s log</h2>
                   <button
                     className="text-link"
                     onClick={() => setModal('journal')}
@@ -641,18 +699,18 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
           <DialogHeader>
             <DialogTitle>
               {modal === 'log'
-                ? 'A little check-in'
+                ? 'Quick entry'
                 : modal === 'preferences'
-                  ? 'Your space, your pace'
+                  ? 'Your preferences'
                   : modal === 'balance'
                     ? 'Your daily balance'
                     : modal === 'journal'
-                      ? 'The story of your day'
+                      ? 'Your daily log'
                       : 'Come back to yourself'}
             </DialogTitle>
             <DialogDescription>
               {modal === 'log'
-                ? 'Capture a small part of your day.'
+                ? 'Choose an amount. Add details only if you need them.'
                 : modal === 'preferences'
                   ? 'Choose the goals that work for you.'
                   : modal === 'balance'
@@ -777,13 +835,17 @@ function Navigation({
           key={name === 'Overview' ? 'Today' : name}
           className={`nav-item ${section === name ? 'active' : ''}`}
           aria-current={section === name ? 'page' : undefined}
+          aria-label={name === 'Overview' ? 'Today' : name}
+          title={name === 'Overview' ? 'Today' : name}
           onClick={() => {
             onChange(name);
             setOpenMobile(false);
           }}
         >
           <Icon size={18} strokeWidth={1.7} />
-          {name === 'Overview' ? 'Today' : name}
+          <span className="nav-label">
+            {name === 'Overview' ? 'Today' : name}
+          </span>
           {section === name && <span className="nav-dot" />}
         </button>
       ))}
@@ -800,6 +862,7 @@ function Metric({
   data,
   onClick,
   action,
+  completion,
 }: {
   label: string;
   type: EntryType;
@@ -809,6 +872,7 @@ function Metric({
   data: number[];
   onClick: () => void;
   action?: React.ReactNode;
+  completion?: number;
 }) {
   const Icon = ICONS[type];
   const max = Math.max(...data, 1);
@@ -827,6 +891,14 @@ function Metric({
           {value}
           <span>{unit}</span>
         </div>
+        {completion !== undefined && (
+          <div
+            className="metric-track"
+            aria-label={`${label}: ${Math.round(completion)} percent of goal`}
+          >
+            <i style={{ width: `${Math.min(100, completion)}%` }} />
+          </div>
+        )}
         <div className="metric-bottom">
           <span>{note}</span>
           <svg

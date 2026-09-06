@@ -27,6 +27,15 @@ Open the address printed by the development server. Visit `/signin-with-chatgpt`
 - Seven-day category charts, a full journal, entry removal and undo
 - Quick water logging and a pausable breathing timer
 - Browser-local manual entries and optional, clearly labeled sample data
+- Quick capture recognizes explicit units (for example `water 500 ml` or `lunch 520 kcal`), previews the amount, and saves on Enter. Water shortcuts and recent manual entries can be repeated with one tap, with Undo. Ambiguous inputs do not create records or guessed food totals.
+
+## Workout plans
+
+Today includes a compact suggested session and weekly progress. Training adds session history and a plan editor for focus, sessions per week, duration, equipment, and custom exercises. Suggestions are simple rules based on those preferences and recorded sessions, not an AI or clinical recommendation.
+
+Start a session to persist its running timer, pause/resume it, and finish with an automatic duration log. Exercise details are optional: edit sets, reps, and weight in kilograms; check off individual sets to start a 60-second rest timer. The previous session's matching exercises prefill reps and weight. Changes save to the signed-in account, with version checks to prevent another tab from silently overwriting a session. Notes and corrected duration are available inside each session.
+
+Plans, workout summaries, and set logs use D1. Only one manual workout can be active per account. Overlapping manual and wearable sessions count once in weekly progress and appear once in session history, with manual set details taking priority. WHOOP is preferred when the same workout appears on both WHOOP and Oura.
 
 ## Connections
 
@@ -36,10 +45,10 @@ Direct browser access to HealthKit is unavailable; automatic Apple Health sync w
 
 WHOOP and Oura use their official OAuth APIs. In Connections, choose Set up, register a developer app with the callback URL shown there, and enter its client ID and secret. Then authorize your account. No developer credentials are bundled and no account is connected by default.
 
-- WHOOP imports sleep and shows recovery, HRV, and resting heart rate in source details. It does not supply steps or dietary calories. [WHOOP OAuth documentation](https://developer.whoop.com/docs/developing/oauth/)
-- Oura imports steps and sleep, with readiness in source details. Activity energy is not treated as food intake. [Oura authentication documentation](https://cloud.ouraring.com/docs/authentication)
+- WHOOP imports sleep and workout summaries and shows recovery, HRV, and resting heart rate in source details. It does not supply steps, dietary calories, or detailed exercise sets. [WHOOP OAuth documentation](https://developer.whoop.com/docs/developing/oauth/)
+- Oura imports steps, sleep, and workout summaries, with readiness in source details. Activity energy is not treated as food intake. [Oura authentication documentation](https://cloud.ouraring.com/docs/authentication)
 
-Sync is manual, fetching up to 31 days of available provider history. Tokens refresh when needed. Source status, last sync, errors, and record counts are shown in Connections. Disconnect can retain saved totals; Remove history deletes that source's stored totals and credentials from Ojas.
+Connected wearables sync when Ojas is opened or brought back into view, with a 15-minute cooldown while the page remains visible. This can be switched off in the plan editor, and manual sync remains available. Nothing runs while the site is closed. Each sync fetches up to 31 days of available history. Tokens refresh when needed. Existing connections need reauthorization for the new WHOOP `read:workout` or Oura `workout` scope; missing workout permission does not block the previous daily metrics. Source status, last sync, errors, and record counts are shown in Connections. Disconnect can retain saved history; Remove history deletes that source's stored totals, workouts, and credentials from Ojas.
 
 Data priority selects one source per metric and day, preventing overlapping providers from being added together. Automatic priority is Apple Health, then Oura, then WHOOP, with manual entries as the fallback. Choosing Manual uses only manual entries. Saved manual entries remain in the journal even when a source provides the dashboard total.
 
@@ -59,5 +68,7 @@ pnpm build
 ```
 
 Tests cover source precedence, import parsing, unit conversion, sleep intervals, provider mappings, and mocked OAuth token refresh and pagination. `tests/http-smoke.mjs` additionally exercises the compiled Worker against an isolated local D1 database with synthetic users, including account isolation, origin enforcement, repeated imports, secret redaction, OAuth state, and disconnect behavior. Run that smoke test only against a raw local Worker on port 3001 with isolated persistence and a test encryption key, never against a deployed site or real account data. It emulates the trusted Sites ingress header; the development auth shim correctly strips client-supplied identity headers.
+
+Additional tests cover quick-log ambiguity, running and paused timers, plan rules, overlapping wearable sessions, and missing workout permissions. `tests/training-http-smoke.mjs` verifies account isolation, idempotent and concurrent session starts, version conflicts, set persistence, and completion against the isolated local Worker.
 
 Live OAuth authorization requires real developer apps and has not been tested with a user's wearable accounts. Lint excludes the unchanged generated component catalog in `components/ui` and starter `hooks/use-mobile.ts`.

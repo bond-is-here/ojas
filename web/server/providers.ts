@@ -7,18 +7,20 @@ import {
   type SyncedEntry,
 } from '../lib/connections.ts';
 import { ApiError } from './errors.ts';
+import { mapWorkouts } from '../lib/source-workouts.ts';
+import type { SourceWorkout } from '../lib/training.ts';
 export const PROVIDERS = {
   whoop: {
     authorize: 'https://api.prod.whoop.com/oauth/oauth2/auth',
     token: 'https://api.prod.whoop.com/oauth/oauth2/token',
     api: 'https://api.prod.whoop.com/developer/v2/',
-    scope: 'read:sleep read:recovery offline',
+    scope: 'read:sleep read:recovery read:workout offline',
   },
   oura: {
     authorize: 'https://cloud.ouraring.com/oauth/authorize',
     token: 'https://api.ouraring.com/oauth/token',
     api: 'https://api.ouraring.com/v2/usercollection/',
-    scope: 'daily',
+    scope: 'daily workout',
   },
 };
 export type Tokens = {
@@ -136,10 +138,33 @@ export async function fetchSourceData(
 ): Promise<{
   entries: SyncedEntry[];
   summary: Record<string, string | number>;
+  workouts: SourceWorkout[];
 }> {
   const end = new Date();
   const start = new Date(end.valueOf() - 31 * 86400000);
   const signal = AbortSignal.timeout(45000);
+  const loadWorkouts = async (
+    params: Record<string, string>,
+    summary: Record<string, string | number>,
+  ) => {
+    try {
+      const records = await collection(
+        provider,
+        provider === 'whoop' ? 'activity/workout' : 'workout',
+        accessToken,
+        params,
+        signal,
+      );
+      return mapWorkouts(provider, records);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) throw error;
+      summary.Workouts =
+        error instanceof ApiError && error.status === 403
+          ? 'Reconnect to allow workout sync'
+          : 'Workout sync unavailable; try again later';
+      return [];
+    }
+  };
   if (provider === 'whoop') {
     const params = { start: start.toISOString(), end: end.toISOString() };
     const sleep = await collection(
@@ -172,7 +197,11 @@ export async function fetchSourceData(
       if (value !== null) summary[key] = value;
     if (latest && typeof latest.created_at === 'string')
       summary['As of'] = latest.created_at.slice(0, 10);
-    return { entries: whoopSleep(sleep), summary };
+    return {
+      entries: whoopSleep(sleep),
+      workouts: await loadWorkouts(params, summary),
+      summary,
+    };
   }
   const params = {
     start_date: start.toISOString().slice(0, 10),
@@ -205,5 +234,9 @@ export async function fetchSourceData(
   const summary: Record<string, string | number> = {};
   if (number(latest?.score) !== null) summary.Readiness = Number(latest.score);
   if (latest && typeof latest.day === 'string') summary['As of'] = latest.day;
-  return { entries: ouraEntries(activity, sleep), summary };
+  return {
+    entries: ouraEntries(activity, sleep),
+    workouts: await loadWorkouts(params, summary),
+    summary,
+  };
 }
