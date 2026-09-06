@@ -29,7 +29,7 @@ export async function connectionRequest<T = Record<string, unknown>>(
   }
   return data as T;
 }
-export function useConnections(day: string) {
+export function useConnections(day: string, autoSync = false) {
   const [data, setData] = useState<ConnectionsData>({
     connections: [],
     entries: [],
@@ -40,24 +40,29 @@ export function useConnections(day: string) {
   const [busy, setBusy] = useState<SourceId | null>(null);
   const mounted = useRef(true);
   const syncing = useRef(false);
+  const attempts = useRef<Record<string, number>>({});
+  const requestDay = useRef(day);
+  useEffect(() => {
+    requestDay.current = day;
+  }, [day]);
   const refresh = useCallback(async () => {
     try {
       const next = await connectionRequest<ConnectionsData>(
         `?day=${encodeURIComponent(day)}`,
       );
-      if (mounted.current) {
+      if (mounted.current && requestDay.current === day) {
         setData(next);
         setError('');
       }
       return next;
     } catch (e) {
-      if (mounted.current)
+      if (mounted.current && requestDay.current === day)
         setError(
           e instanceof Error ? e.message : 'Could not load your connections.',
         );
       throw e;
     } finally {
-      if (mounted.current) setLoading(false);
+      if (mounted.current && requestDay.current === day) setLoading(false);
     }
   }, [day]);
   const sync = useCallback(
@@ -92,14 +97,52 @@ export function useConnections(day: string) {
     };
   }, [refresh]);
   /* oxlint-enable react/react-compiler */
-  // Refresh the signed-in view after returning from a provider. No background polling or hidden sync jobs.
+  // Sync only while this page is visible. Provider records retain their own timestamps.
   useEffect(() => {
+    let disposed = false;
+    let running = false;
+    const update = async () => {
+      if (running || document.visibilityState !== 'visible') return;
+      running = true;
+      try {
+        const next = await refresh();
+        if (!autoSync || disposed) return;
+        for (const source of next.connections) {
+          if (
+            disposed ||
+            syncing.current ||
+            source.provider === 'apple-health' ||
+            source.status !== 'connected'
+          )
+            continue;
+          const recent = Math.max(
+            source.lastSync ? Date.parse(source.lastSync) : 0,
+            attempts.current[source.provider] || 0,
+          );
+          if (Date.now() - recent < 15 * 60000) continue;
+          attempts.current[source.provider] = Date.now();
+          await sync(source.provider).catch(() => undefined);
+        }
+      } catch {
+        /* The existing source state exposes errors and a retry action. */
+      } finally {
+        running = false;
+      }
+    };
     const focus = () => {
-      void refresh().catch(() => undefined);
+      void update();
     };
     window.addEventListener('focus', focus);
-    return () => window.removeEventListener('focus', focus);
-  }, [refresh]);
+    document.addEventListener('visibilitychange', focus);
+    const interval = autoSync ? setInterval(focus, 60000) : undefined;
+    if (autoSync) void update();
+    return () => {
+      disposed = true;
+      window.removeEventListener('focus', focus);
+      document.removeEventListener('visibilitychange', focus);
+      if (interval) clearInterval(interval);
+    };
+  }, [refresh, sync, autoSync]);
   return { data, loading, error, busy, refresh, sync };
 }
 export type ConnectionsController = ReturnType<typeof useConnections>;

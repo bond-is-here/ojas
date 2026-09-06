@@ -11,7 +11,7 @@ import {
   Play,
   Plus,
 } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { Switch } from '@/components/ui/switch';
 import VitalityHalo from '@/components/halo-loader';
@@ -51,6 +51,7 @@ export function LogForm({
     return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   });
   const [error, setError] = useState('');
+  const [showDetails, setShowDetails] = useState(false);
   const submit = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     const n = Number(amount);
@@ -99,19 +100,6 @@ export function LogForm({
             );
           })}
         </TabsList>
-        {TYPES.map((t) => (
-          <TabsContent key={t} value={t}>
-            <div className={`entry-type-note ${TYPE_META[t].color}`}>
-              {t === 'activity'
-                ? 'Every bit of movement belongs here.'
-                : t === 'nutrition'
-                  ? 'A meal, a snack, a moment of nourishment.'
-                  : t === 'water'
-                    ? 'Make a little space to hydrate.'
-                    : 'Last night’s sleep, or a little afternoon rest.'}
-            </div>
-          </TabsContent>
-        ))}
       </Tabs>
       <div className="field">
         <label htmlFor="entry-amount">
@@ -158,42 +146,54 @@ export function LogForm({
           </span>
         )}
       </div>
-      <div className="field">
-        <label htmlFor="entry-title">
-          A little context<span>Optional</span>
-        </label>
-        <input
-          id="entry-title"
-          type="text"
-          maxLength={100}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder={TYPE_META[type].placeholder}
-        />
-      </div>
-      <div className="field-pair">
-        <div className="field">
-          <label htmlFor="entry-date">Date</label>
-          <input
-            id="entry-date"
-            type="date"
-            required
-            max={today}
-            value={entryDay}
-            onChange={(e) => setEntryDay(e.target.value)}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="entry-time">Time</label>
-          <input
-            id="entry-time"
-            type="time"
-            required
-            value={time}
-            onChange={(e) => setTime(e.target.value)}
-          />
-        </div>
-      </div>
+      <button
+        className="details-toggle"
+        type="button"
+        aria-expanded={showDetails}
+        onClick={() => setShowDetails(!showDetails)}
+      >
+        Details<span>{showDetails ? '−' : '+'}</span>
+      </button>
+      {showDetails && (
+        <>
+          <div className="field">
+            <label htmlFor="entry-title">
+              Label<span>Optional</span>
+            </label>
+            <input
+              id="entry-title"
+              type="text"
+              maxLength={100}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={TYPE_META[type].placeholder}
+            />
+          </div>
+          <div className="field-pair">
+            <div className="field">
+              <label htmlFor="entry-date">Date</label>
+              <input
+                id="entry-date"
+                type="date"
+                required
+                max={today}
+                value={entryDay}
+                onChange={(e) => setEntryDay(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="entry-time">Time</label>
+              <input
+                id="entry-time"
+                type="time"
+                required
+                value={time}
+                onChange={(e) => setTime(e.target.value)}
+              />
+            </div>
+          </div>
+        </>
+      )}
       {error && (
         <p className="form-error" role="alert">
           {error}

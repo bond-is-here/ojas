@@ -70,7 +70,7 @@ const DETAILS = {
     icon: Activity,
     name: 'WHOOP',
     subtitle: 'Recovery, connected',
-    metrics: ['Sleep', 'Recovery', 'HRV'],
+    metrics: ['Sleep', 'Recovery', 'Workouts'],
     description: 'Keep your sleep and recovery in the picture.',
     guide: 'https://developer.whoop.com/docs/developing/oauth/',
     accent: 'whoop',
@@ -79,7 +79,7 @@ const DETAILS = {
     icon: CircleDot,
     name: 'Oura',
     subtitle: 'Your daily rhythm',
-    metrics: ['Steps', 'Sleep', 'Readiness'],
+    metrics: ['Steps', 'Sleep', 'Workouts'],
     description: 'Bring your ring’s daily signals together.',
     guide: 'https://cloud.ouraring.com/docs/authentication',
     accent: 'oura',
@@ -178,7 +178,7 @@ export default function ConnectionsPanel({
   return (
     <section className="connections-view">
       <div className="connections-toolbar">
-        <p>Your sources. One clear picture.</p>
+        <p>Let your devices do the logging.</p>
         <button
           className="secondary-button"
           disabled={loading || !!error}
@@ -231,8 +231,6 @@ export default function ConnectionsPanel({
                 </span>
               </div>
               <h2>{detail.name}</h2>
-              <span className="source-subtitle">{detail.subtitle}</span>
-              <p>{detail.description}</p>
               <div className="source-metrics">
                 {detail.metrics.map((m) => (
                   <span key={m}>{m}</span>
@@ -288,7 +286,7 @@ export default function ConnectionsPanel({
           Connected-source history is saved privately to your Ojas account.
           Choose which source counts for each metric.
         </p>
-        <span>Sync on demand · Last 30 days</span>
+        <span>Last 30 days</span>
       </div>
       <Dialog
         open={selected !== null}
@@ -358,6 +356,16 @@ export default function ConnectionsPanel({
                   {current.count} records in your saved history. Sync after your
                   wearable has updated its own app.
                 </p>
+                {current.summary?.Workouts ===
+                  'Reconnect to allow workout sync' && (
+                  <a
+                    className="secondary-button full-width"
+                    href={`/api/connections/${selected}/authorize`}
+                  >
+                    <Link2 size={15} />
+                    Authorize workouts
+                  </a>
+                )}
                 <button
                   className="primary-button full-width"
                   disabled={!!busy || saving}

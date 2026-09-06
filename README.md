@@ -26,9 +26,9 @@ AI is an extension of Ojas—not a requirement. The core experience should remai
 
 ## Project status
 
-The working website lives in [`web/`](web/README.md). Its minimal dashboard brings together a Three.js vitality halo and four daily essentials: movement, sleep, nourishment, and hydration. Detailed charts, editable goals, a journal, and a breathing timer are available when needed.
+The working website lives in [`web/`](web/README.md). Its minimal dashboard brings together a Three.js vitality halo and four daily essentials: movement, sleep, nourishment, and hydration. A quick-entry bar, repeat actions, detailed charts, editable goals, a journal, and a breathing timer are available when needed. Workout plans support automatic duration tracking and optional exercises, reps, weights, and individual set logs.
 
-Connections supports Apple Health export imports and OAuth integrations for WHOOP and Oura. WHOOP and Oura require developer-app credentials and account authorization before live sync. Imported daily totals and connection settings are saved per signed-in account; manual entries remain in the current browser. Medical records and AI integrations remain part of the longer-term vision.
+Connections supports Apple Health export imports and OAuth integrations for WHOOP and Oura. WHOOP and Oura require developer-app credentials and account authorization before live sync, then refresh daily metrics and workout summaries while Ojas is open. Imported daily totals and connection settings are saved per signed-in account; manual entries remain in the current browser. Medical records and AI integrations remain part of the longer-term vision.
 
 To run it locally with Node.js 22.13+ and pnpm:
 

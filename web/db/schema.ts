@@ -52,3 +52,36 @@ export const syncPreferences = sqliteTable('sync_preferences', {
   userId: text('user_id').primaryKey(),
   preferences: text('preferences').notNull(),
 });
+export const trainingPreferences = sqliteTable('training_preferences', {
+  userId: text('user_id').primaryKey(),
+  preferences: text('preferences').notNull(),
+});
+export const workoutSessions = sqliteTable(
+  'workout_sessions',
+  {
+    userId: text('user_id').notNull(),
+    id: text('id').notNull(),
+    day: text('day').notNull(),
+    status: text('status').notNull(),
+    version: integer('version').notNull(),
+    payload: text('payload').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    index('idx_workout_sessions_user_day').on(t.userId, t.day),
+  ],
+);
+export const sourceWorkouts = sqliteTable(
+  'source_workouts',
+  {
+    userId: text('user_id').notNull(),
+    provider: text('provider').notNull(),
+    id: text('id').notNull(),
+    day: text('day').notNull(),
+    payload: text('payload').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.provider, t.id] }),
+    index('idx_source_workouts_user_day').on(t.userId, t.day),
+  ],
+);
