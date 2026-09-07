@@ -246,11 +246,11 @@ export async function completeAuthorization(
       409,
     );
 }
-function insertEntry(user: string, e: SyncedEntry, revision?: string) {
+function insertEntry(user: string, e: SyncedEntry, connection?: ConnectionRow) {
   const sql =
     'INSERT INTO source_entries (user_id,provider,record_id,day,time,type,amount,title) SELECT ?,?,?,?,?,?,?,? WHERE ' +
-    (revision
-      ? 'EXISTS (SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=?)'
+    (connection
+      ? 'EXISTS (SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=? AND sync_until=?)'
       : '1') +
     ' ON CONFLICT(user_id,provider,record_id) DO UPDATE SET day=excluded.day,time=excluded.time,type=excluded.type,amount=excluded.amount,title=excluded.title';
   return database()
@@ -264,36 +264,34 @@ function insertEntry(user: string, e: SyncedEntry, revision?: string) {
       e.type,
       e.amount,
       e.title,
-      ...(revision ? [user, e.source, revision] : []),
+      ...(connection
+        ? [user, e.source, connection.revision, connection.sync_until]
+        : []),
     );
 }
 export async function syncProvider(user: string, provider: OAuthProvider) {
   const db = database();
-  const connection = await getConnection(user, provider);
-  if (
-    !connection?.token_cipher ||
-    !connection.client_id ||
-    !connection.secret_cipher
-  )
+  const existing = await getConnection(user, provider);
+  if (!existing?.token_cipher || !existing.client_id || !existing.secret_cipher)
     throw new ApiError('Connect this source before syncing.', 409);
-  const acquired = await db
+  const connection = await db
     .prepare(
-      'UPDATE connections SET sync_until=? WHERE user_id=? AND provider=? AND sync_until < ? AND revision=?',
+      'UPDATE connections SET sync_until=? WHERE user_id=? AND provider=? AND sync_until < ? AND revision=? RETURNING *',
     )
-    .bind(Date.now() + 120000, user, provider, Date.now(), connection.revision)
-    .run();
-  if (!acquired.meta.changes)
+    .bind(Date.now() + 120000, user, provider, Date.now(), existing.revision)
+    .first<ConnectionRow>();
+  if (!connection)
     throw new ApiError(
       'This source is already syncing. Try again shortly.',
       409,
     );
   try {
     let tokens = await unseal<Tokens>(
-      connection.token_cipher,
+      connection.token_cipher!,
       `${user}:${provider}:tokens`,
     );
     const credentials = await unseal<{ secret: string }>(
-      connection.secret_cipher,
+      connection.secret_cipher!,
       `${user}:${provider}:client`,
     );
     const refresh = async () => {
@@ -311,7 +309,7 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
       );
       const saved = await db
         .prepare(
-          'UPDATE connections SET token_cipher=?,expires_at=? WHERE user_id=? AND provider=? AND revision=?',
+          'UPDATE connections SET token_cipher=?,expires_at=? WHERE user_id=? AND provider=? AND revision=? AND sync_until=?',
         )
         .bind(
           await seal(tokens, `${user}:${provider}:tokens`),
@@ -319,6 +317,7 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
           user,
           provider,
           connection.revision,
+          connection.sync_until,
         )
         .run();
       if (!saved.meta.changes)
@@ -338,18 +337,57 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
       } else throw error;
     }
     const current = await getConnection(user, provider);
-    if (current?.revision !== connection.revision)
+    if (
+      current?.revision !== connection.revision ||
+      current.sync_until !== connection.sync_until
+    )
       throw new ApiError(
         'The connection changed during sync. Please try again.',
         409,
       );
     // One atomic batch ensures failed or partial provider requests never replace good history.
     const results = await db.batch([
-      ...data.entries.map((e) => insertEntry(user, e, connection.revision)),
+      db
+        .prepare(
+          'DELETE FROM source_entries WHERE user_id=? AND provider=? AND day>=? AND day<? AND EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=? AND sync_until=?)',
+        )
+        .bind(
+          user,
+          provider,
+          data.window.fromDay,
+          data.window.untilDay,
+          user,
+          provider,
+          connection.revision,
+          connection.sync_until,
+        ),
+      ...(data.workoutsComplete
+        ? [
+            db
+              .prepare(
+                'DELETE FROM source_workouts WHERE user_id=? AND provider=? AND ' +
+                  (provider === 'whoop'
+                    ? "json_extract(payload,'$.startedAt')>=? AND json_extract(payload,'$.endedAt')<?"
+                    : 'day>=? AND day<?') +
+                  ' AND EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=? AND sync_until=?)',
+              )
+              .bind(
+                user,
+                provider,
+                provider === 'whoop' ? data.window.start : data.window.fromDay,
+                provider === 'whoop' ? data.window.end : data.window.untilDay,
+                user,
+                provider,
+                connection.revision,
+                connection.sync_until,
+              ),
+          ]
+        : []),
+      ...data.entries.map((e) => insertEntry(user, e, connection)),
       ...data.workouts.map((w) =>
         db
           .prepare(
-            'INSERT INTO source_workouts(user_id,provider,id,day,payload) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=?) ON CONFLICT(user_id,provider,id) DO UPDATE SET day=excluded.day,payload=excluded.payload',
+            'INSERT INTO source_workouts(user_id,provider,id,day,payload) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=? AND sync_until=?) ON CONFLICT(user_id,provider,id) DO UPDATE SET day=excluded.day,payload=excluded.payload',
           )
           .bind(
             user,
@@ -360,11 +398,12 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
             user,
             provider,
             connection.revision,
+            connection.sync_until,
           ),
       ),
       db
         .prepare(
-          "UPDATE connections SET status='connected',last_sync=?,last_error=NULL,summary=?,sync_until=0 WHERE user_id=? AND provider=? AND revision=?",
+          "UPDATE connections SET status='connected',last_sync=?,last_error=NULL,summary=? WHERE user_id=? AND provider=? AND revision=? AND sync_until=?",
         )
         .bind(
           new Date().toISOString(),
@@ -372,6 +411,7 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
           user,
           provider,
           connection.revision,
+          connection.sync_until,
         ),
     ]);
     if (!results[results.length - 1].meta.changes)
@@ -384,7 +424,7 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
         : 'Sync could not finish. Your previous data is unchanged.';
     await db
       .prepare(
-        "UPDATE connections SET last_error=?,status=CASE WHEN ? THEN 'reconnect' ELSE status END WHERE user_id=? AND provider=? AND revision=?",
+        "UPDATE connections SET last_error=?,status=CASE WHEN ? THEN 'reconnect' ELSE status END WHERE user_id=? AND provider=? AND revision=? AND sync_until=?",
       )
       .bind(
         message,
@@ -394,15 +434,16 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
         user,
         provider,
         connection.revision,
+        connection.sync_until,
       )
       .run();
     throw error instanceof ApiError ? error : new ApiError(message, 502);
   } finally {
     await db
       .prepare(
-        'UPDATE connections SET sync_until=0 WHERE user_id=? AND provider=? AND revision=?',
+        'UPDATE connections SET sync_until=0 WHERE user_id=? AND provider=? AND revision=? AND sync_until=?',
       )
-      .bind(user, provider, connection.revision)
+      .bind(user, provider, connection.revision, connection.sync_until)
       .run();
   }
 }

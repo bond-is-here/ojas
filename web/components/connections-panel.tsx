@@ -102,9 +102,11 @@ function statusLabel(status: ConnectionStatus['status']) {
 export default function ConnectionsPanel({
   controller,
   onImported,
+  onHistoryRemoved,
 }: {
   controller: ConnectionsController;
   onImported: () => void;
+  onHistoryRemoved: (provider: SourceId) => void;
 }) {
   const { data, loading, error, busy, refresh, sync } = controller;
   const [selected, setSelected] = useState<SourceId | null>(null);
@@ -161,6 +163,7 @@ export default function ConnectionsPanel({
       await connectionRequest(`/${selected}/disconnect`, {
         removeData: confirm === 'remove',
       });
+      if (confirm === 'remove') onHistoryRemoved(selected);
       await refresh();
       setNotice(
         confirm === 'remove'

@@ -83,6 +83,37 @@ export function defaultExercises(
         : ['Leg press', 'Chest press', 'Seated cable row', 'Leg curl'];
   return names.map((name) => exercise(name, minutes <= 20 ? 2 : 3, 10));
 }
+export function repeatExercises(exercises: Exercise[], previous?: Workout) {
+  return exercises.map((e) => {
+    const last = previous?.exercises.find(
+      (p) => p.name.toLowerCase() === e.name.toLowerCase(),
+    );
+    return {
+      ...e,
+      sets: e.sets.map((s, i) => ({
+        ...s,
+        reps: last?.sets[i]?.reps ?? s.reps,
+        weight: last?.sets[i]?.weight ?? s.weight,
+      })),
+    };
+  });
+}
+export function adjustDuration(
+  workout: Workout,
+  value: string,
+  original: string,
+  now = new Date(),
+) {
+  if (value === original) return workout;
+  const minutes = Number(value);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440)
+    throw new Error('Enter a whole number of minutes between 1 and 1,440.');
+  return {
+    ...workout,
+    elapsedSeconds: minutes * 60,
+    runningSince: workout.runningSince ? now.toISOString() : null,
+  };
+}
 export function weekStart(day: string) {
   const weekday = new Date(`${day}T12:00:00`).getDay();
   return shiftDay(day, -(weekday === 0 ? 6 : weekday - 1));

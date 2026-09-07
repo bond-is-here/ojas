@@ -138,7 +138,7 @@ function sourceEntry(
     !id ||
     !validDay(day) ||
     !Number.isFinite(amount) ||
-    amount <= 0 ||
+    amount < 0 ||
     amount > TYPE_META[type].max
   )
     return null;
@@ -199,7 +199,7 @@ export function ouraEntries(
       String(r.day),
       '23:59',
       'activity',
-      number(r.steps) || 0,
+      number(r.steps) ?? NaN,
       'Oura daily steps',
     );
     return e ? [e] : [];
@@ -213,7 +213,7 @@ export function ouraEntries(
       String(r.day),
       end.slice(11, 16),
       'sleep',
-      (number(r.total_sleep_duration) || 0) / 3600,
+      (number(r.total_sleep_duration) ?? NaN) / 3600,
       'Oura sleep',
     );
     return e ? [e] : [];

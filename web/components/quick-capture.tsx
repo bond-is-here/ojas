@@ -37,6 +37,7 @@ export default function QuickCapture({
   const [success, setSuccess] = useState('');
   const capture = parseQuickLog(input);
   const save = (value: Capture) => {
+    if (!enabled) return;
     const now = new Date();
     onSave({
       ...value,
@@ -118,7 +119,6 @@ export default function QuickCapture({
           </button>
         ))}
         {recentCaptures(entries)
-          .filter((e) => e.type !== 'water')
           .slice(0, 2)
           .map((e) => {
             const Icon = icons[e.type];

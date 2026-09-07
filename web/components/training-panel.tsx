@@ -39,6 +39,8 @@ import {
   dedupeWorkouts,
   overlapsWorkout,
   defaultExercises,
+  repeatExercises,
+  adjustDuration,
   elapsed,
   exercise,
   startWorkout,
@@ -50,6 +52,7 @@ import {
 } from '@/lib/training';
 import { SOURCE_NAMES } from '@/lib/connections';
 import type { TrainingController } from '@/hooks/use-training';
+import { WorkoutSaveQueue } from '@/lib/workout-save-queue';
 
 const KIND_ICON = { strength: Dumbbell, walk: Footprints, mobility: Wind };
 function clock(seconds: number) {
@@ -104,19 +107,7 @@ export default function TrainingPanel({
         .filter((s) => s.status === 'completed')
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
       if (!starting.current)
-        next.exercises = next.exercises.map((e) => {
-          const previous = last?.exercises.find(
-            (p) => p.name.toLowerCase() === e.name.toLowerCase(),
-          );
-          return {
-            ...e,
-            sets: e.sets.map((s, i) => ({
-              ...s,
-              reps: previous?.sets[i]?.reps || s.reps,
-              weight: previous?.sets[i]?.weight || s.weight,
-            })),
-          };
-        });
+        next.exercises = repeatExercises(next.exercises, last);
       starting.current = next;
       setSelected(await save(next));
       starting.current = null;
@@ -562,17 +553,17 @@ function WorkoutEditor({
   const [now, setNow] = useState(() => Date.now());
   const [restUntil, setRestUntil] = useState(0);
   const [closing, setClosing] = useState(false);
+  const [durationInput, setDurationInput] = useState<string | null>(null);
+  const durationOriginal = useRef('');
+  const [queue] = useState(() => new WorkoutSaveQueue(initial.version));
   const latest = useRef(initial),
-    version = useRef(initial.version),
-    pending = useRef<Workout | null>(null),
-    running = useRef<Promise<boolean> | null>(null),
     debounce = useRef<ReturnType<typeof setTimeout> | null>(null),
     mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     const tick = setInterval(() => setNow(Date.now()), 1000);
     const leave = (e: BeforeUnloadEvent) => {
-      if (pending.current || running.current) {
+      if (queue.hasPending) {
         e.preventDefault();
       }
     };
@@ -583,49 +574,36 @@ function WorkoutEditor({
       if (debounce.current) clearTimeout(debounce.current);
       window.removeEventListener('beforeunload', leave);
     };
-  }, []);
-  const flush = (): Promise<boolean> => {
+  }, [queue]);
+  const flush = async (): Promise<boolean> => {
     if (debounce.current) clearTimeout(debounce.current);
-    if (running.current) return running.current;
-    if (pending.current) {
+    if (queue.hasPending) {
       setStatus('Saving…');
       setError('');
     }
-    const job = async () => {
-      while (pending.current) {
-        const attempt = pending.current;
-        pending.current = null;
-        try {
-          const saved = await onSave({ ...attempt, version: version.current });
-          version.current = saved.version;
-          if (!pending.current) {
-            latest.current = saved;
-            if (mounted.current) setDraft(saved);
-          }
-        } catch (e) {
-          pending.current ||= attempt;
-          if (mounted.current) {
-            setError(e instanceof Error ? e.message : 'Could not save.');
-            setStatus('Not saved');
-          }
-          return false;
-        }
+    try {
+      const saved = await queue.flush(onSave);
+      if (saved && !queue.hasPending) {
+        latest.current = saved;
+        if (mounted.current) setDraft(saved);
       }
       if (mounted.current) {
         setStatus('Saved');
         setError('');
       }
       return true;
-    };
-    running.current = job().finally(() => {
-      running.current = null;
-    });
-    return running.current;
+    } catch (e) {
+      if (mounted.current) {
+        setError(e instanceof Error ? e.message : 'Could not save.');
+        setStatus('Not saved');
+      }
+      return false;
+    }
   };
   const change = (next: Workout, immediate = false) => {
     latest.current = next;
     setDraft(next);
-    pending.current = next;
+    queue.enqueue(next);
     setStatus('Saving…');
     setError('');
     if (debounce.current) clearTimeout(debounce.current);
@@ -652,7 +630,7 @@ function WorkoutEditor({
     };
     latest.current = next;
     setDraft(next);
-    pending.current = next;
+    queue.enqueue(next);
     if (await flush()) onClose();
     else setClosing(false);
   };
@@ -776,17 +754,32 @@ function WorkoutEditor({
               max={1440}
               step={1}
               aria-label="Adjust workout duration in minutes"
-              defaultValue={Math.max(1, Math.round(elapsed(draft) / 60))}
+              value={
+                durationInput ??
+                Math.max(1, Math.round(elapsed(draft, now) / 60))
+              }
+              onFocus={() => {
+                const value = String(
+                  Math.max(1, Math.round(elapsed(latest.current) / 60)),
+                );
+                durationOriginal.current = value;
+                setDurationInput(value);
+              }}
+              onChange={(e) => setDurationInput(e.target.value)}
               onBlur={(e) => {
-                const n = Number(e.target.value);
-                if (Number.isInteger(n) && n >= 1 && n <= 1440)
-                  change({
-                    ...latest.current,
-                    elapsedSeconds: n * 60,
-                    runningSince: latest.current.runningSince
-                      ? new Date().toISOString()
-                      : null,
-                  });
+                try {
+                  const next = adjustDuration(
+                    latest.current,
+                    e.target.value,
+                    durationOriginal.current,
+                  );
+                  if (next !== latest.current) change(next);
+                } catch (e) {
+                  setError(
+                    e instanceof Error ? e.message : 'Check the duration.',
+                  );
+                }
+                setDurationInput(null);
               }}
             />
           </label>

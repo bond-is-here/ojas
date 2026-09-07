@@ -56,24 +56,22 @@ import QuickCapture from '@/components/quick-capture';
 import TrainingPanel from '@/components/training-panel';
 import { useTraining } from '@/hooks/use-training';
 import { useConnections } from '@/hooks/use-connections';
+import { useLocalWorkspace } from '@/hooks/use-local-workspace';
 import { mergeSourceEntries, SOURCE_NAMES } from '@/lib/connections';
 import {
   balance,
+  advanceCalendar,
   dateKey,
-  DEFAULT_WORKSPACE,
   entriesForDay,
   formatAmount,
   formatTime,
-  parseWorkspace,
   progress,
   shiftDay,
-  STORAGE_KEY,
   totals,
   TYPE_META,
   TYPES,
   type Entry,
   type EntryType,
-  type Workspace,
 } from '@/lib/health';
 const ICONS = {
   activity: Footprints,
@@ -100,12 +98,13 @@ const HEADINGS: Record<string, string> = {
 };
 export default function Dashboard({ initialDay }: { initialDay: string }) {
   const [section, setSection] = useState('Overview');
-  const [today, setToday] = useState(initialDay);
-  const [day, setDay] = useState(initialDay);
-  const [workspace, setWorkspace] = useState<Workspace>(DEFAULT_WORKSPACE);
-  const [ready, setReady] = useState(false);
-  const [storageError, setStorageError] = useState('');
-  const [storageBlocked, setStorageBlocked] = useState(false);
+  const [calendar, setCalendar] = useState({
+    day: initialDay,
+    today: initialDay,
+  });
+  const { day, today } = calendar;
+  const setDay = (day: string) => setCalendar((c) => ({ ...c, day }));
+  const { workspace, setWorkspace, ready, storageError } = useLocalWorkspace();
   const [modal, setModal] = useState<Modal>(null);
   const [logType, setLogType] = useState<EntryType>('activity');
   const [notice, setNotice] = useState('');
@@ -124,43 +123,22 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
   /* oxlint-disable react/react-compiler -- Hydrate browser and server data after SSR and report storage failures. */
   useEffect(() => {
     const local = dateKey(new Date());
-    setToday(local);
-    setDay(local);
+    setCalendar({ day: local, today: local });
     if (
       new URL(window.location.href).searchParams.get('view') === 'connections'
     )
       setSection('Connections');
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setWorkspace(parseWorkspace(saved));
-    } catch {
-      setStorageError(
-        'Your saved local log could not be read. New manual entries will stay in this session to protect the saved copy.',
-      );
-      setStorageBlocked(true);
-    }
-    setReady(true);
   }, []);
-  useEffect(() => {
-    if (!ready || storageBlocked) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
-      setStorageError('');
-    } catch {
-      setStorageError(
-        'Browser storage is unavailable. Manual entries will last for this session only.',
-      );
-    }
-  }, [workspace, ready, storageBlocked]);
   useEffect(() => {
     if (ready && connections.data.entries.length && !sourcesApplied.current) {
       sourcesApplied.current = true;
       setWorkspace((w) => ({ ...w, demo: false }));
     }
-  }, [ready, connections.data.entries.length]);
+  }, [ready, connections.data.entries.length, setWorkspace]);
   /* oxlint-enable react/react-compiler */
   useEffect(() => {
-    const refresh = () => setToday(dateKey(new Date()));
+    const refresh = () =>
+      setCalendar((c) => advanceCalendar(c, dateKey(new Date())));
     window.addEventListener('focus', refresh);
     const timer = setInterval(refresh, 60000);
     return () => {
@@ -455,6 +433,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
             <ConnectionsPanel
               controller={connections}
               onImported={() => setWorkspace((w) => ({ ...w, demo: false }))}
+              onHistoryRemoved={training.removeSourceHistory}
             />
           ) : section === 'Training' ? (
             <TrainingPanel controller={training} day={day} />
@@ -639,7 +618,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
               )}
               <section className="panel recent-panel">
                 <div className="section-title">
-                  <h2>Today’s log</h2>
+                  <h2>{day === today ? 'Today’s log' : 'Daily log'}</h2>
                   <button
                     className="text-link"
                     onClick={() => setModal('journal')}
@@ -725,7 +704,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
           </DialogHeader>
           {modal === 'log' && (
             <LogForm
-              key={`log-${day}-${logType}`}
+              key={`log-${logType}`}
               type={logType}
               day={day}
               today={today}
