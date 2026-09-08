@@ -1,0 +1,1 @@
+ALTER TABLE `connections` ADD `next_sync_at` integer DEFAULT 0 NOT NULL;

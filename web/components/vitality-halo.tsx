@@ -90,12 +90,15 @@ export default function VitalityHalo({
     group.add(particles);
     group.rotation.x = 0.25;
     group.rotation.y = -0.24;
+    let needsRender = true;
+    let lastMode = '';
     const resize = () => {
       const { width, height } = host.getBoundingClientRect();
       if (!width || !height) return;
       renderer.setSize(width, height);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      needsRender = true;
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -126,25 +129,33 @@ export default function VitalityHalo({
       const delta = Math.min((now - last) / 1000, 0.05);
       last = now;
       if (!visible || document.hidden) return;
-      if (!reduce.matches && !state.current.paused) {
+      const frozen = reduce.matches || state.current.paused;
+      const mode = `${frozen}:${state.current.breathing}`;
+      // A paused or reduced-motion halo needs only its first frame and resizes.
+      if (frozen && !needsRender && mode === lastMode) return;
+      if (!frozen) {
         elapsed += delta;
         material.uniforms.uTime.value = elapsed;
         material2.uniforms.uTime.value = elapsed + 3;
         particles.rotation.z = elapsed * 0.025;
         group.rotation.z = Math.sin(elapsed * 0.12) * 0.08;
+        group.rotation.y += (-0.24 + pointer.x - group.rotation.y) * 0.035;
+        group.rotation.x += (0.25 + pointer.y - group.rotation.x) * 0.035;
       }
-      group.rotation.y += (-0.24 + pointer.x - group.rotation.y) * 0.035;
-      group.rotation.x += (0.25 + pointer.y - group.rotation.x) * 0.035;
       const scale =
         state.current.breathing && !reduce.matches
           ? 1 - Math.cos((elapsed * Math.PI) / 4) * 0.1
           : 1;
       group.scale.setScalar(scale);
       renderer.render(scene, camera);
+      needsRender = false;
+      lastMode = mode;
     };
     frame = requestAnimationFrame(draw);
     const onLoss = (e: Event) => {
       e.preventDefault();
+      cancelAnimationFrame(frame);
+      renderer.domElement.style.display = 'none';
       setUnavailable(true);
     };
     renderer.domElement.addEventListener('webglcontextlost', onLoss);

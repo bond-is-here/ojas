@@ -10,18 +10,28 @@ import {
   type SourcePreferences,
   type ConnectionStatus,
 } from '../lib/connections.ts';
-import { ApiError, database, siteOrigin, seal, unseal, hash } from './runtime';
+import {
+  ApiError,
+  bindings,
+  database,
+  siteOrigin,
+  seal,
+  unseal,
+  hash,
+} from './runtime';
 import {
   exchangeTokens,
   fetchSourceData,
   PROVIDERS,
   type Tokens,
 } from './providers';
+import { createProviderBudgetRequester } from './provider-budget';
 import type { AppleImportData } from '../lib/apple-import.ts';
 export type ConnectionRow = {
   user_id: string;
   provider: SourceId;
   client_id: string | null;
+  credential_source: 'personal' | 'managed';
   secret_cipher: string | null;
   token_cipher: string | null;
   expires_at: number | null;
@@ -30,10 +40,60 @@ export type ConnectionRow = {
   last_error: string | null;
   summary: string | null;
   sync_until: number;
+  next_sync_at: number;
   revision: string;
 };
 export const callbackUrl = (provider: OAuthProvider) =>
   `${siteOrigin()}/api/connections/${provider}/callback`;
+type CredentialSource = 'personal' | 'managed';
+function managedCredentials(provider: OAuthProvider) {
+  const env = bindings();
+  const clientId = (
+    provider === 'whoop' ? env.WHOOP_CLIENT_ID : env.OURA_CLIENT_ID
+  )?.trim();
+  const secret = (
+    provider === 'whoop' ? env.WHOOP_CLIENT_SECRET : env.OURA_CLIENT_SECRET
+  )?.trim();
+  return clientId && clientId.length <= 300 && secret && secret.length <= 5000
+    ? { clientId, secret }
+    : null;
+}
+async function resolveCredentials(
+  user: string,
+  provider: OAuthProvider,
+  source: CredentialSource,
+  clientId: string,
+  connection: ConnectionRow,
+) {
+  if (source === 'managed') {
+    const credentials = managedCredentials(provider);
+    if (!credentials)
+      throw new ApiError(
+        'This wearable connection is temporarily unavailable. Please try again later.',
+        503,
+      );
+    if (credentials.clientId !== clientId)
+      throw new ApiError(
+        'The Ojas connection has changed. Reconnect this wearable to continue.',
+        409,
+      );
+    return credentials;
+  }
+  if (
+    connection.credential_source === 'managed' ||
+    connection.client_id !== clientId ||
+    !connection.secret_cipher
+  )
+    throw new ApiError(
+      'Your app setup changed. Start the connection again.',
+      409,
+    );
+  const { secret } = await unseal<{ secret: string }>(
+    connection.secret_cipher,
+    `${user}:${provider}:client`,
+  );
+  return { clientId, secret };
+}
 export async function getConnection(user: string, provider: SourceId) {
   return database()
     .prepare('SELECT * FROM connections WHERE user_id = ? AND provider = ?')
@@ -48,7 +108,7 @@ export async function getConnections(
   const results = await db.batch([
     db
       .prepare(
-        'SELECT provider,status,last_sync,last_error,summary,client_id FROM connections WHERE user_id = ?',
+        'SELECT provider,status,last_sync,next_sync_at,last_error,summary,client_id,secret_cipher,credential_source FROM connections WHERE user_id = ?',
       )
       .bind(user),
     db
@@ -107,6 +167,14 @@ export async function getConnections(
   }
   const connections = SOURCE_ORDER.map((provider) => {
     const row = rows.find((r) => r.provider === provider);
+    const managed = isOAuthProvider(provider)
+      ? managedCredentials(provider)
+      : null;
+    const source: CredentialSource | null = row?.client_id
+      ? row.credential_source === 'managed'
+        ? 'managed'
+        : 'personal'
+      : null;
     const count = (
       results[3].results as { provider: string; count: number }[]
     ).find((r) => r.provider === provider)?.count;
@@ -114,18 +182,26 @@ export async function getConnections(
       provider,
       status: row?.status || 'not_connected',
       lastSync: row?.last_sync || null,
+      nextSyncAt: row?.next_sync_at || 0,
       lastError: row?.last_error || null,
       summary: row?.summary
         ? (JSON.parse(row.summary) as Record<string, string | number>)
         : null,
-      configured: !!row?.client_id,
+      configured:
+        source === 'personal'
+          ? !!row?.secret_cipher
+          : source === 'managed' && managed?.clientId === row?.client_id,
       count:
         (typeof count === 'number' ? count : 0) +
         ((results[4].results as { provider: string; count: number }[]).find(
           (r) => r.provider === provider,
         )?.count || 0),
       ...(isOAuthProvider(provider)
-        ? { callbackUrl: callbackUrl(provider) }
+        ? {
+            callbackUrl: callbackUrl(provider),
+            managedAvailable: !!managed,
+            credentialSource: source,
+          }
         : {}),
     } satisfies ConnectionStatus;
   });
@@ -155,25 +231,52 @@ export async function saveCredentials(
   const revision = crypto.randomUUID();
   await database()
     .prepare(
-      "INSERT INTO connections (user_id,provider,client_id,secret_cipher,status,revision) VALUES (?,?,?,?,'configured',?) ON CONFLICT(user_id,provider) DO UPDATE SET client_id=excluded.client_id,secret_cipher=excluded.secret_cipher,token_cipher=NULL,expires_at=NULL,status='configured',last_error=NULL,sync_until=0,revision=excluded.revision",
+      "INSERT INTO connections (user_id,provider,client_id,secret_cipher,status,revision,credential_source) VALUES (?,?,?,?,'configured',?,'personal') ON CONFLICT(user_id,provider) DO UPDATE SET client_id=excluded.client_id,secret_cipher=excluded.secret_cipher,credential_source='personal',token_cipher=NULL,expires_at=NULL,status='configured',last_error=NULL,sync_until=0,revision=excluded.revision",
     )
     .bind(user, provider, body.clientId.trim(), cipher, revision)
     .run();
 }
 export async function authorize(user: string, provider: OAuthProvider) {
-  const row = await getConnection(user, provider);
-  if (!row?.client_id || !row.secret_cipher)
-    throw new ApiError('Set up your developer app before connecting.', 409);
-  const state = crypto.randomUUID() + crypto.randomUUID();
-  await database().batch([
-    database()
+  let row = await getConnection(user, provider);
+  if (!row) {
+    if (!managedCredentials(provider))
+      throw new ApiError(
+        'This wearable connection is temporarily unavailable. Please try again later.',
+        503,
+      );
+    await database()
       .prepare(
-        'DELETE FROM oauth_states WHERE expires_at < ? OR (user_id = ? AND provider = ?)',
+        "INSERT INTO connections(user_id,provider,status,revision) VALUES (?,?,'not_connected',?) ON CONFLICT(user_id,provider) DO NOTHING",
       )
-      .bind(Date.now(), user, provider),
+      .bind(user, provider, crypto.randomUUID())
+      .run();
+    row = await getConnection(user, provider);
+  }
+  if (!row)
+    throw new ApiError('Your connection could not be started. Try again.', 503);
+  const source: CredentialSource =
+    row.credential_source !== 'managed' && row.client_id && row.secret_cipher
+      ? 'personal'
+      : 'managed';
+  const clientId =
+    source === 'personal'
+      ? row.client_id!
+      : managedCredentials(provider)?.clientId;
+  if (!clientId)
+    throw new ApiError(
+      'This wearable connection is temporarily unavailable. Please try again later.',
+      503,
+    );
+  const state = crypto.randomUUID() + crypto.randomUUID();
+  const results = await database().batch([
     database()
       .prepare(
-        'INSERT INTO oauth_states (state_hash,user_id,provider,revision,expires_at) VALUES (?,?,?,?,?)',
+        'DELETE FROM oauth_states WHERE expires_at < ? OR (user_id = ? AND provider = ? AND EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=?))',
+      )
+      .bind(Date.now(), user, provider, user, provider, row.revision),
+    database()
+      .prepare(
+        'INSERT INTO oauth_states (state_hash,user_id,provider,revision,expires_at,client_id,credential_source) SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=?)',
       )
       .bind(
         await hash(state),
@@ -181,11 +284,21 @@ export async function authorize(user: string, provider: OAuthProvider) {
         provider,
         row.revision,
         Date.now() + 600000,
+        clientId,
+        source,
+        user,
+        provider,
+        row.revision,
       ),
   ]);
+  if (!results[1].meta.changes)
+    throw new ApiError(
+      'Your app setup changed. Start the connection again.',
+      409,
+    );
   const url = new URL(PROVIDERS[provider].authorize);
   url.search = new URLSearchParams({
-    client_id: row.client_id,
+    client_id: clientId,
     redirect_uri: callbackUrl(provider),
     response_type: 'code',
     scope: PROVIDERS[provider].scope,
@@ -200,49 +313,67 @@ export async function completeAuthorization(
   code: string,
 ) {
   const db = database();
+  const requester = createProviderBudgetRequester(db);
   const row = await db
     .prepare(
-      'DELETE FROM oauth_states WHERE state_hash = ? AND user_id = ? AND provider = ? AND expires_at > ? RETURNING revision',
+      'DELETE FROM oauth_states WHERE state_hash = ? AND user_id = ? AND provider = ? AND expires_at > ? RETURNING revision,client_id,credential_source',
     )
     .bind(await hash(state), user, provider, Date.now())
-    .first<{ revision: string }>();
+    .first<{
+      revision: string;
+      client_id: string | null;
+      credential_source: CredentialSource | null;
+    }>();
   if (!row)
     throw new ApiError(
       'This authorization has expired. Start the connection again.',
       409,
     );
   const connection = await getConnection(user, provider);
-  if (
-    !connection?.client_id ||
-    !connection.secret_cipher ||
-    connection.revision !== row.revision
-  )
+  if (!connection || connection.revision !== row.revision)
     throw new ApiError(
       'Your app setup changed. Start the connection again.',
       409,
     );
-  const { secret } = await unseal<{ secret: string }>(
-    connection.secret_cipher,
-    `${user}:${provider}:client`,
+  // Nullable state fields support consent started before this additive migration.
+  const source =
+    row.credential_source || connection.credential_source || 'personal';
+  const clientId = row.client_id || connection.client_id;
+  if (!clientId)
+    throw new ApiError(
+      'Your app setup changed. Start the connection again.',
+      409,
+    );
+  const credentials = await resolveCredentials(
+    user,
+    provider,
+    source,
+    clientId,
+    connection,
   );
   const tokens = await exchangeTokens(
     provider,
-    { clientId: connection.client_id, secret },
+    credentials,
     {
       grant_type: 'authorization_code',
       code,
       redirect_uri: callbackUrl(provider),
     },
+    undefined,
+    requester,
   );
   const cipher = await seal(tokens, `${user}:${provider}:tokens`);
   const result = await db
     .prepare(
-      "UPDATE connections SET token_cipher=?,expires_at=?,status='connected',last_error=NULL,revision=?,sync_until=0 WHERE user_id=? AND provider=? AND revision=?",
+      "UPDATE connections SET token_cipher=?,expires_at=?,status='connected',last_error=NULL,revision=?,sync_until=0,client_id=?,credential_source=?,secret_cipher=CASE WHEN ?='managed' THEN NULL ELSE secret_cipher END WHERE user_id=? AND provider=? AND revision=?",
     )
     .bind(
       cipher,
       tokens.expiresAt,
       crypto.randomUUID(),
+      clientId,
+      source,
+      source,
       user,
       provider,
       row.revision,
@@ -279,41 +410,75 @@ function insertEntry(user: string, e: SyncedEntry, connection?: ConnectionRow) {
 }
 export async function syncProvider(user: string, provider: OAuthProvider) {
   const db = database();
+  const requester = createProviderBudgetRequester(db);
   const existing = await getConnection(user, provider);
-  if (!existing?.token_cipher || !existing.client_id || !existing.secret_cipher)
+  if (
+    !existing?.token_cipher ||
+    !existing.client_id ||
+    (existing.credential_source !== 'managed' && !existing.secret_cipher)
+  )
     throw new ApiError('Connect this source before syncing.', 409);
+  const now = Date.now();
   const connection = await db
     .prepare(
-      'UPDATE connections SET sync_until=? WHERE user_id=? AND provider=? AND sync_until < ? AND revision=? RETURNING *',
+      'UPDATE connections SET sync_until=?,next_sync_at=? WHERE user_id=? AND provider=? AND sync_until<=? AND next_sync_at<=? AND revision=? RETURNING *',
     )
-    .bind(Date.now() + 120000, user, provider, Date.now(), existing.revision)
+    .bind(
+      now + 120000,
+      now + 60000,
+      user,
+      provider,
+      now,
+      now,
+      existing.revision,
+    )
     .first<ConnectionRow>();
-  if (!connection)
-    throw new ApiError(
-      'This source is already syncing. Try again shortly.',
-      409,
-    );
+  if (!connection) {
+    const current = await getConnection(user, provider);
+    if (!current || current.revision !== existing.revision)
+      throw new ApiError(
+        'The connection changed. Reload Ojas and try syncing again.',
+        409,
+      );
+    if (current.sync_until > now)
+      throw new ApiError(
+        'This source is already syncing. Try again shortly.',
+        409,
+      );
+    if (current.next_sync_at > now) {
+      const seconds = Math.ceil((current.next_sync_at - now) / 1000);
+      throw new ApiError(
+        `Wait ${seconds} ${seconds === 1 ? 'second' : 'seconds'} before syncing this source again.`,
+        429,
+      );
+    }
+    throw new ApiError('The connection changed. Try syncing again.', 409);
+  }
   try {
     let tokens = await unseal<Tokens>(
       connection.token_cipher!,
       `${user}:${provider}:tokens`,
     );
-    const credentials = await unseal<{ secret: string }>(
-      connection.secret_cipher!,
-      `${user}:${provider}:client`,
+    const credentials = await resolveCredentials(
+      user,
+      provider,
+      connection.credential_source || 'personal',
+      connection.client_id!,
+      connection,
     );
     const refresh = async () => {
       if (!tokens.refreshToken)
         throw new ApiError('Reconnect this source to renew access.', 401);
       tokens = await exchangeTokens(
         provider,
-        { clientId: connection.client_id!, secret: credentials.secret },
+        credentials,
         {
           grant_type: 'refresh_token',
           refresh_token: tokens.refreshToken,
           ...(provider === 'whoop' ? { scope: 'offline' } : {}),
         },
         tokens.refreshToken,
+        requester,
       );
       const saved = await db
         .prepare(
@@ -337,11 +502,17 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
     if (tokens.expiresAt < Date.now() + 60000) await refresh();
     let data;
     try {
-      data = await fetchSourceData(provider, tokens.accessToken);
+      data = await fetchSourceData(provider, tokens.accessToken, {
+        clientId: connection.client_id!,
+        requester,
+      });
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         await refresh();
-        data = await fetchSourceData(provider, tokens.accessToken);
+        data = await fetchSourceData(provider, tokens.accessToken, {
+          clientId: connection.client_id!,
+          requester,
+        });
       } else throw error;
     }
     const current = await getConnection(user, provider);
@@ -355,20 +526,24 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
       );
     // One atomic batch ensures failed or partial provider requests never replace good history.
     const results = await db.batch([
-      db
-        .prepare(
-          'DELETE FROM source_entries WHERE user_id=? AND provider=? AND day>=? AND day<? AND EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=? AND sync_until=?)',
-        )
-        .bind(
-          user,
-          provider,
-          data.window.fromDay,
-          data.window.untilDay,
-          user,
-          provider,
-          connection.revision,
-          connection.sync_until,
-        ),
+      ...(data.entriesComplete
+        ? [
+            db
+              .prepare(
+                'DELETE FROM source_entries WHERE user_id=? AND provider=? AND day>=? AND day<? AND EXISTS(SELECT 1 FROM connections WHERE user_id=? AND provider=? AND revision=? AND sync_until=?)',
+              )
+              .bind(
+                user,
+                provider,
+                data.window.fromDay,
+                data.window.untilDay,
+                user,
+                provider,
+                connection.revision,
+                connection.sync_until,
+              ),
+          ]
+        : []),
       ...(data.workoutsComplete
         ? [
             db
@@ -518,7 +693,7 @@ export async function disconnect(
   const statements = [
     db
       .prepare(
-        "UPDATE connections SET status='not_connected',client_id=NULL,secret_cipher=NULL,token_cipher=NULL,expires_at=NULL,last_error=NULL,sync_until=0,revision=? WHERE user_id=? AND provider=?",
+        "UPDATE connections SET status='not_connected',client_id=NULL,secret_cipher=NULL,credential_source='personal',token_cipher=NULL,expires_at=NULL,last_error=NULL,sync_until=0,revision=? WHERE user_id=? AND provider=?",
       )
       .bind(crypto.randomUUID(), user, provider),
     db

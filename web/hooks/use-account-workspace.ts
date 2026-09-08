@@ -4,31 +4,48 @@ import {
   createAccountWorkspace,
   initialWorkspaceState,
 } from '@/lib/account-workspace';
+import { parseWorkspace } from '@/lib/health';
 import type { AccountWorkspace, WorkspaceAction } from '@/lib/workspace';
+import { requestJSON } from '@/lib/client-request';
+
+function isAccountWorkspace(data: unknown) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const value = data as { accountId?: unknown; workspace?: unknown };
+  if (typeof value.accountId !== 'string') return false;
+  try {
+    parseWorkspace(JSON.stringify(value.workspace));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function useAccountWorkspace(accountId: string, day: string) {
   const [state, setState] = useState(initialWorkspaceState);
   const [client] = useState(() => {
     const key = `ojas.pending.v1:${encodeURIComponent(accountId)}:`;
-    const request = async <T>(url: string, body?: unknown): Promise<T> => {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(20000),
-        method: body === undefined ? 'GET' : 'POST',
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {
-          'X-Ojas-Account': accountId,
-          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    const request = async <T>(
+      url: string,
+      body?: unknown,
+      validate?: (data: unknown) => boolean,
+    ): Promise<T> => {
+      return requestJSON<T>(
+        url,
+        {
+          method: body === undefined ? 'GET' : 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: {
+            'X-Ojas-Account': accountId,
+            ...(body === undefined
+              ? {}
+              : { 'Content-Type': 'application/json' }),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const data = (await response.json()) as T & { error?: string };
-      if (!response.ok)
-        throw new Error(
-          data.error ||
-            'Your log could not be saved. Retry when you are connected.',
-        );
-      return data;
+        20000,
+        validate,
+      );
     };
     return createAccountWorkspace(
       accountId,
@@ -50,8 +67,18 @@ export function useAccountWorkspace(accountId: string, day: string) {
         read: (selectedDay) =>
           request<AccountWorkspace>(
             `/api/workspace?day=${encodeURIComponent(selectedDay)}`,
+            undefined,
+            isAccountWorkspace,
           ),
-        send: (mutation) => request('/api/workspace', mutation),
+        send: (mutation) =>
+          request('/api/workspace', mutation, (data) => {
+            return (
+              !!data &&
+              typeof data === 'object' &&
+              !Array.isArray(data) &&
+              (data as { saved?: unknown }).saved === true
+            );
+          }),
       },
       setState,
     );

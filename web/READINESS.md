@@ -27,7 +27,7 @@ The improvement loop is active. A passing build alone does not establish custome
 
 ## Verification
 
-The regression suite has 57 passing tests. Compiled-Worker checks use a stable Miniflare/workerd server, snapshotted build output, a fresh temporary database, and synthetic accounts to exercise authorization, source reconciliation, workout concurrency, workspace persistence, exports, and the actual served Apple parsing worker. Type checking, lint, and the production build pass.
+The regression suite has 90 passing tests. Compiled-Worker checks use a stable Miniflare/workerd server, snapshotted build output, a fresh temporary database, and synthetic accounts to exercise authorization, source reconciliation, workout concurrency, workspace persistence, exports, malformed response recovery, persisted sync cooldowns, rolling provider budgets, and the actual served Apple parsing worker. Type checking, lint, and the production build pass.
 
 Browser testing was explicitly authorized and performed on desktop and a 390 × 844 mobile viewport. Verified quick water and meal logging, persistence after reload, fractional set editing, corrected duration on Escape, workout completion, mobile plan editing/reset, per-metric Apple preview/import, and account export download. With the local server stopped, workout edits remained recoverable; a fresh tab restored the exact notes and 12-minute duration and completed the session once. Synthetic fixtures were used; live personal records were not modified for testing.
 

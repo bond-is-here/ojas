@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import ts from 'typescript';
 import * as connectionModel from '../lib/connections.ts';
 import { ApiError } from '../server/errors.ts';
+import { PROVIDERS } from '../server/providers.ts';
 
 const root = new URL('../', import.meta.url);
 // Execute actual application modules with explicit local-only dependencies.
@@ -27,6 +28,8 @@ export function loadModule(file, dependencies) {
   return loaded.exports;
 }
 export function serverHarness() {
+  const environment = /** @type {Record<string, string | undefined>} */ ({});
+  const sealedContexts = /** @type {string[]} */ ([]);
   const sqlite = new DatabaseSync(':memory:');
   for (const file of fs
     .readdirSync(new URL('drizzle/', root))
@@ -79,6 +82,7 @@ export function serverHarness() {
       workouts:
         /** @type {import('../lib/training.ts').SourceWorkout[]} */ ([]),
       summary: {},
+      entriesComplete: true,
       workoutsComplete: true,
       window: {
         start: '2026-08-07T12:00:00.000Z',
@@ -90,19 +94,33 @@ export function serverHarness() {
     refreshSubmissions: [],
     validRefresh: 'old',
     beforeRefresh: async () => {},
+    beforeFetch: async () => {},
+    fetchCalls: 0,
+    beforeAuthorization: async () => {},
+    exchanges:
+      /** @type {Array<{provider: string, credentials: {clientId: string, secret: string}, grant: Record<string, string>}>} */ ([]),
   };
   const providers = {
-    PROVIDERS: {},
+    PROVIDERS,
     async fetchSourceData() {
+      provider.fetchCalls++;
+      await provider.beforeFetch();
       return provider.data;
     },
     async exchangeTokens(_provider, _credentials, grant) {
-      if (grant.grant_type === 'authorization_code')
+      provider.exchanges.push({
+        provider: _provider,
+        credentials: { ..._credentials },
+        grant: { ...grant },
+      });
+      if (grant.grant_type === 'authorization_code') {
+        await provider.beforeAuthorization();
         return {
           accessToken: 'new-authorization',
           refreshToken: 'new-refresh',
           expiresAt: Date.now() + 3600000,
         };
+      }
       provider.refreshSubmissions.push(grant.refresh_token);
       if (grant.refresh_token !== provider.validRefresh)
         throw new ApiError('Refresh token is no longer valid.', 409);
@@ -117,24 +135,40 @@ export function serverHarness() {
   };
   const runtime = {
     ApiError,
+    bindings: () => environment,
     database: () => db,
     siteOrigin: () => 'https://ojas.example',
-    seal: async (value) => JSON.stringify(value),
+    seal: async (value, context) => {
+      sealedContexts.push(context);
+      return JSON.stringify(value);
+    },
     unseal: async (value) => JSON.parse(value),
     hash: async (value) => value,
   };
-  const api = loadModule('server/connections.ts', {
-    '../lib/connections.ts': connectionModel,
-    './runtime': runtime,
-    './providers': providers,
-  });
-  function seed(expiresAt, provider = 'oura') {
+  const reloadApi = () =>
+    loadModule('server/connections.ts', {
+      '../lib/connections.ts': connectionModel,
+      './runtime': runtime,
+      './providers': providers,
+      './provider-budget': {
+        createProviderBudgetRequester: () => async () => Response.json({}),
+      },
+    });
+  const api = reloadApi();
+  function expireSyncCooldown(user = 'user', provider = 'oura') {
+    sqlite
+      .prepare(
+        'UPDATE connections SET next_sync_at=0 WHERE user_id=? AND provider=?',
+      )
+      .run(user, provider);
+  }
+  function seed(expiresAt, provider = 'oura', user = 'user') {
     sqlite
       .prepare(
         'INSERT INTO connections(user_id,provider,client_id,secret_cipher,token_cipher,expires_at,status,revision) VALUES (?,?,?,?,?,?,?,?)',
       )
       .run(
-        'user',
+        user,
         provider,
         'client',
         JSON.stringify({ secret: 'secret' }),
@@ -148,7 +182,18 @@ export function serverHarness() {
         'revision-1',
       );
   }
-  return { sqlite, hooks, provider, api, seed, runtime };
+  return {
+    sqlite,
+    hooks,
+    provider,
+    api,
+    reloadApi,
+    expireSyncCooldown,
+    seed,
+    runtime,
+    environment,
+    sealedContexts,
+  };
 }
 export function hookHarness() {
   const states = [];

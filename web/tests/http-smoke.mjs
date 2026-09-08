@@ -84,6 +84,42 @@ try {
   );
   const b = await (await call('', { user: userB })).json();
   assert.equal(b.entries.length, 0);
+  const managed = b.connections.find((c) => c.provider === 'oura');
+  assert.equal(managed.managedAvailable, true);
+  assert.equal(managed.configured, false);
+  assert.equal(managed.credentialSource, null);
+  assert.equal(JSON.stringify(b).includes('synthetic-managed-secret'), false);
+  const managedStart = await call(`/oura/authorize?account=${userB}`, {
+    user: userB,
+  });
+  assert.equal(managedStart.status, 302);
+  const managedURL = new URL(managedStart.headers.get('location'));
+  assert.equal(managedURL.origin, 'https://cloud.ouraring.com');
+  assert.equal(
+    managedURL.searchParams.get('client_id'),
+    'synthetic-managed-client',
+  );
+  assert.equal(
+    managedURL.searchParams.get('redirect_uri'),
+    base + '/api/connections/oura/callback',
+  );
+  assert.match(
+    managedStart.headers.get('set-cookie'),
+    /HttpOnly; SameSite=Lax/,
+  );
+  assert.equal(
+    (await call(`/oura/authorize?account=${userA}`, { user: userB })).status,
+    409,
+  );
+  const pendingManaged = await (await call('', { user: userB })).json();
+  assert.equal(
+    pendingManaged.connections.find((c) => c.provider === 'oura').status,
+    'not_connected',
+  );
+  assert.equal(
+    pendingManaged.connections.find((c) => c.provider === 'oura').configured,
+    false,
+  );
   const preferences = {
     activity: 'manual',
     nutrition: 'auto',
@@ -151,4 +187,5 @@ try {
 } finally {
   await call('/apple-health/disconnect', { body: { removeData: true } });
   await call('/whoop/disconnect', { body: { removeData: true } });
+  await call('/oura/disconnect', { user: userB, body: { removeData: true } });
 }
