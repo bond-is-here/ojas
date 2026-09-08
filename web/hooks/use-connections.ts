@@ -42,27 +42,45 @@ export function useConnections(day: string, autoSync = false) {
   const syncing = useRef(false);
   const attempts = useRef<Record<string, number>>({});
   const requestDay = useRef(day);
+  const generation = useRef(0);
+  const invalidate = useCallback(() => {
+    generation.current++;
+  }, []);
   useEffect(() => {
     requestDay.current = day;
   }, [day]);
   const refresh = useCallback(async () => {
+    const current = ++generation.current;
     try {
       const next = await connectionRequest<ConnectionsData>(
         `?day=${encodeURIComponent(day)}`,
       );
-      if (mounted.current && requestDay.current === day) {
+      if (
+        mounted.current &&
+        requestDay.current === day &&
+        generation.current === current
+      ) {
         setData(next);
         setError('');
       }
       return next;
     } catch (e) {
-      if (mounted.current && requestDay.current === day)
+      if (
+        mounted.current &&
+        requestDay.current === day &&
+        generation.current === current
+      )
         setError(
           e instanceof Error ? e.message : 'Could not load your connections.',
         );
       throw e;
     } finally {
-      if (mounted.current && requestDay.current === day) setLoading(false);
+      if (
+        mounted.current &&
+        requestDay.current === day &&
+        generation.current === current
+      )
+        setLoading(false);
     }
   }, [day]);
   const sync = useCallback(
@@ -94,8 +112,9 @@ export function useConnections(day: string, autoSync = false) {
     void refresh().catch(() => undefined);
     return () => {
       mounted.current = false;
+      invalidate();
     };
-  }, [refresh]);
+  }, [refresh, invalidate]);
   /* oxlint-enable react/react-compiler */
   // Sync only while this page is visible. Provider records retain their own timestamps.
   useEffect(() => {

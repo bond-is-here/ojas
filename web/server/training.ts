@@ -96,21 +96,19 @@ export async function saveWorkout(user: string, input: unknown) {
           )
           .run();
   if (!result.meta.changes) {
+    const previous = await db
+      .prepare('SELECT payload FROM workout_sessions WHERE user_id=? AND id=?')
+      .bind(user, next.id)
+      .first<{ payload: string }>();
+    if (previous) {
+      const saved = validateWorkout(JSON.parse(previous.payload));
+      if (
+        saved.version === next.version &&
+        JSON.stringify(saved) === JSON.stringify(next)
+      )
+        return saved;
+    }
     if (version === 0) {
-      const previous = await db
-        .prepare(
-          'SELECT payload FROM workout_sessions WHERE user_id=? AND id=?',
-        )
-        .bind(user, next.id)
-        .first<{ payload: string }>();
-      if (previous) {
-        const saved = validateWorkout(JSON.parse(previous.payload));
-        if (
-          saved.version === 1 &&
-          JSON.stringify({ ...saved, version: 0 }) === JSON.stringify(workout)
-        )
-          return saved;
-      }
       throw new ApiError(
         'A session is already in progress. Reload your plan to resume it.',
         409,

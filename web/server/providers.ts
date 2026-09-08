@@ -139,10 +139,13 @@ export async function fetchSourceData(
   entries: SyncedEntry[];
   summary: Record<string, string | number>;
   workouts: SourceWorkout[];
+  window: { start: string; end: string; fromDay: string; untilDay: string };
+  workoutsComplete: boolean;
 }> {
   const end = new Date();
   const start = new Date(end.valueOf() - 31 * 86400000);
   const signal = AbortSignal.timeout(45000);
+  let workoutsComplete = false;
   const loadWorkouts = async (
     params: Record<string, string>,
     summary: Record<string, string | number>,
@@ -155,6 +158,7 @@ export async function fetchSourceData(
         params,
         signal,
       );
+      workoutsComplete = true;
       return mapWorkouts(provider, records);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) throw error;
@@ -200,6 +204,17 @@ export async function fetchSourceData(
     return {
       entries: whoopSleep(sleep),
       workouts: await loadWorkouts(params, summary),
+      workoutsComplete,
+      // Sleep entries store local wake-up dates, not UTC start timestamps.
+      // Reconcile only full interior days to retain records crossing the query boundary.
+      window: {
+        start: params.start,
+        end: params.end,
+        fromDay: new Date(start.valueOf() + 2 * 86400000)
+          .toISOString()
+          .slice(0, 10),
+        untilDay: new Date(end.valueOf() - 86400000).toISOString().slice(0, 10),
+      },
       summary,
     };
   }
@@ -237,6 +252,13 @@ export async function fetchSourceData(
   return {
     entries: ouraEntries(activity, sleep),
     workouts: await loadWorkouts(params, summary),
+    workoutsComplete,
+    window: {
+      start: start.toISOString(),
+      end: end.toISOString(),
+      fromDay: params.start_date,
+      untilDay: params.end_date,
+    },
     summary,
   };
 }

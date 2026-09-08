@@ -95,8 +95,18 @@ saved = (await response.json()).workout;
 assert.equal(saved.version, 2);
 assert.equal(
   (await call({ action: 'workout', workout: edited })).status,
+  200,
+  'Retrying the exact saved update acknowledges a lost response',
+);
+assert.equal(
+  (
+    await call({
+      action: 'workout',
+      workout: { ...edited, note: 'A different stale edit' },
+    })
+  ).status,
   409,
-  'Stale writes must not overwrite newer set logs',
+  'Different stale writes must not overwrite newer set logs',
 );
 assert.equal(
   (await call({ action: 'workout', workout: saved }, userB)).status,

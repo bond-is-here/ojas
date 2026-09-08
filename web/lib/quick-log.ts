@@ -7,53 +7,75 @@ import {
 
 export type Capture = Pick<Entry, 'type' | 'amount' | 'title'>;
 export function parseQuickLog(raw: string): Capture | null {
-  const input = raw.trim().toLowerCase().replace(/,/g, '');
+  let input = raw.trim().toLowerCase();
   if (!input || input.length > 160) return null;
-  const categories = [
-    /\b(?:water|ml|milliliters?|liters?|litres?|oz)\b|\d\s*l\b/.test(input),
-    /\b(?:sleep|slept|nap)\b/.test(input),
-    /\b(?:steps?)\b/.test(input),
-    /\b(?:kcal|calories?|cals?)\b/.test(input),
-  ];
-  if (categories.filter(Boolean).length !== 1) return null;
-  const quantityPattern =
-    /\d+(?:\.\d+)?\s*(?:ml|milliliters?|l|liters?|litres?|oz|k?\s*steps?|kcal|calories?|cals?)\b/g;
-  if (!categories[1] && [...input.matchAll(quantityPattern)].length !== 1)
+  // Only normalize unambiguous thousands separators, never decimal commas.
+  for (const number of input.matchAll(/\d[\d,.]*/g)) {
+    if (
+      number[0].includes(',') &&
+      !/^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(number[0])
+    )
+      return null;
+  }
+  input = input.replace(/,/g, '');
+  const quantity =
+    /(?<![\w.+-])(\d+(?:\.\d+)?)\s*(ml|milliliters?|l|liters?|litres?|oz|k\s*steps?|steps?|kcal|calories?|cals?|h|hr|hrs|hours?|m|min|mins|minutes?)(?![a-z])/g;
+  const amounts = [...input.matchAll(quantity)];
+  const remainder = input.replace(quantity, ' ');
+  // Do not silently ignore negative, partial, extra, or malformed quantities.
+  if (!amounts.length || /\d|(?:^|\s)[+−-](?:\s|$)/.test(remainder))
     return null;
+  const unitType = (unit: string): EntryType =>
+    /^(?:ml|milliliters?|l|liters?|litres?|oz)$/.test(unit)
+      ? 'water'
+      : /steps?$/.test(unit)
+        ? 'activity'
+        : /^(?:kcal|calories?|cals?)$/.test(unit)
+          ? 'nutrition'
+          : 'sleep';
+  const types = amounts.map((m) => unitType(m[2]));
+  if (new Set(types).size !== 1) return null;
+  const keywords: [RegExp, EntryType][] = [
+    [/\bwater\b/, 'water'],
+    [/\b(?:sleep|slept|nap)\b/, 'sleep'],
+    [/\bsteps?\b/, 'activity'],
+    [/\b(?:kcal|calories?|cals?)\b/, 'nutrition'],
+  ];
   if (
-    categories[1] &&
-    ([...input.matchAll(/\d+(?:\.\d+)?\s*(?:h|hr|hrs|hours?)\b/g)].length > 1 ||
-      [...input.matchAll(/\d+\s*(?:m|min|mins|minutes?)\b/g)].length > 1)
+    keywords.some(
+      ([pattern, type]) => pattern.test(remainder) && type !== types[0],
+    )
   )
     return null;
   let type: EntryType;
   let amount: number;
-  if (categories[0]) {
+  const [first] = amounts;
+  if (types[0] !== 'sleep' && amounts.length !== 1) return null;
+  if (types[0] === 'water') {
     type = 'water';
-    const m = input.match(
-      /(?:^|\s)(\d+(?:\.\d+)?)\s*(ml|milliliters?|l|liters?|litres?|oz)\b/,
-    );
-    if (!m) return null;
     amount = Math.round(
-      Number(m[1]) *
-        (/^(l|liter|litre)/.test(m[2]) ? 1000 : m[2] === 'oz' ? 29.5735 : 1),
+      Number(first[1]) *
+        (/^(l|liter|litre)/.test(first[2])
+          ? 1000
+          : first[2] === 'oz'
+            ? 29.5735
+            : 1),
     );
-  } else if (categories[1]) {
+  } else if (types[0] === 'sleep') {
     type = 'sleep';
-    const h = input.match(/(?:^|\s)(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours?)\b/);
-    const m = input.match(/(?:^|\s)(\d+)\s*(?:m|min|mins|minutes?)\b/);
-    if (!h && !m) return null;
+    if (!/\b(?:sleep|slept|nap)\b/.test(input)) return null;
+    const hours = amounts.filter((m) => m[2].startsWith('h'));
+    const minutes = amounts.filter((m) => m[2].startsWith('m'));
+    if (hours.length > 1 || minutes.length > 1) return null;
+    const h = hours[0],
+      m = minutes[0];
     amount = (Number(h?.[1] || 0) * 60 + Number(m?.[1] || 0)) / 60;
-  } else if (categories[2]) {
+  } else if (types[0] === 'activity') {
     type = 'activity';
-    const m = input.match(/(?:^|\s)(\d+(?:\.\d+)?)\s*(k)?\s*steps?\b/);
-    if (!m) return null;
-    amount = Number(m[1]) * (m[2] ? 1000 : 1);
+    amount = Number(first[1]) * (first[2].startsWith('k') ? 1000 : 1);
   } else {
     type = 'nutrition';
-    const m = input.match(/(?:^|\s)(\d+)\s*(?:kcal|calories?|cals?)\b/);
-    if (!m) return null;
-    amount = Number(m[1]);
+    amount = Number(first[1]);
   }
   if (!validAmount(type, amount)) return null;
   return {
@@ -66,7 +88,7 @@ export function parseQuickLog(raw: string): Capture | null {
 export function recentCaptures(entries: Entry[]): Capture[] {
   const seen = new Set<string>();
   return [...entries]
-    .filter((e) => !e.sample && !e.source)
+    .filter((e) => !e.sample && !e.source && e.type !== 'water')
     .sort((a, b) => `${b.day}T${b.time}`.localeCompare(`${a.day}T${a.time}`))
     .filter((e) => {
       const key = `${e.type}:${e.amount}:${e.title}`;

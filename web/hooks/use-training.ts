@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { WorkoutSaveError } from '@/lib/workout-save-queue';
 import {
   DEFAULT_PLAN,
   type TrainingData,
@@ -16,8 +17,9 @@ async function request<T>(day: string, body?: unknown): Promise<T> {
   });
   const data = (await response.json()) as T & { error?: string };
   if (!response.ok)
-    throw new Error(
+    throw new WorkoutSaveError(
       data.error || 'Your workout could not be saved. Try again.',
+      response.status,
     );
   return data;
 }
@@ -85,6 +87,21 @@ export function useTraining(day: string) {
     },
     [day],
   );
-  return { data, error, loading, refresh, save, savePreferences };
+  const removeSourceHistory = useCallback((source: string) => {
+    ++generation.current;
+    setData((d) => ({
+      ...d,
+      imported: d.imported.filter((w) => w.source !== source),
+    }));
+  }, []);
+  return {
+    data,
+    error,
+    loading,
+    refresh,
+    save,
+    savePreferences,
+    removeSourceHistory,
+  };
 }
 export type TrainingController = ReturnType<typeof useTraining>;

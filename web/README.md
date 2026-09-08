@@ -56,6 +56,10 @@ Data priority selects one source per metric and day, preventing overlapping prov
 
 Manual entries and goals remain in this browser's local storage; clearing browser data removes them. Imported daily totals, source preferences, and connection metadata are stored in the site's D1 database per authenticated account. Client secrets and OAuth tokens are encrypted with AES-GCM, with account and provider bound to the ciphertext. Credentials are never returned by the Connections API. Mutating routes require the configured site origin; OAuth callbacks validate one-time state and a browser cookie.
 
+Manual edits read the latest stored workspace under a shared Web Lock when the browser supports it, preventing simultaneous tabs from overwriting each other's logs. If storage is unreadable or full, Ojas preserves its saved copy and clearly marks new changes as session-only. Workout saves retry an uncertain request before sending later edits; validation failures allow a corrected draft to be saved.
+
+Wearable sync reconciles corrected and removed records only inside its fetched history window. Older history is retained, and a failed optional workout request leaves prior workouts intact. WHOOP sleep reconciliation conservatively retains partial boundary days because its API uses timestamps while stored sleep totals use local dates.
+
 Sites hosting metadata is in `.openai/hosting.json`. The Cloudflare worker requires the `DB` D1 binding, `SITE_ORIGIN`, and a secret `CONNECTIONS_ENCRYPTION_KEY`. Actual `.dev.vars` and `.env` files must not be committed or packaged. Production environment values are managed by Sites. Drizzle migrations are in `drizzle/` and included by the Sites packaging helper.
 
 ## Validation
@@ -70,5 +74,7 @@ pnpm build
 Tests cover source precedence, import parsing, unit conversion, sleep intervals, provider mappings, and mocked OAuth token refresh and pagination. `tests/http-smoke.mjs` additionally exercises the compiled Worker against an isolated local D1 database with synthetic users, including account isolation, origin enforcement, repeated imports, secret redaction, OAuth state, and disconnect behavior. Run that smoke test only against a raw local Worker on port 3001 with isolated persistence and a test encryption key, never against a deployed site or real account data. It emulates the trusted Sites ingress header; the development auth shim correctly strips client-supplied identity headers.
 
 Additional tests cover quick-log ambiguity, running and paused timers, plan rules, overlapping wearable sessions, and missing workout permissions. `tests/training-http-smoke.mjs` verifies account isolation, idempotent and concurrent session starts, version conflicts, set persistence, and completion against the isolated local Worker.
+
+Regression tests exercise lost save responses, corrected validation failures, concurrent local edits, midnight rollover, out-of-order responses, source-history removal, zero-value corrections, history reconciliation, token rotation, and expired sync leases. Both HTTP smoke scripts accept `OJAS_TEST_URL` to select an isolated localhost Worker.
 
 Live OAuth authorization requires real developer apps and has not been tested with a user's wearable accounts. Lint excludes the unchanged generated component catalog in `components/ui` and starter `hooks/use-mobile.ts`.

@@ -73,6 +73,14 @@ export const TYPES = Object.keys(TYPE_META) as EntryType[];
 export function dateKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+export function advanceCalendar(
+  calendar: { day: string; today: string },
+  today: string,
+) {
+  return today === calendar.today
+    ? calendar
+    : { today, day: calendar.day === calendar.today ? today : calendar.day };
+}
 export function shiftDay(day: string, offset: number) {
   const d = new Date(`${day}T12:00:00`);
   d.setDate(d.getDate() + offset);
