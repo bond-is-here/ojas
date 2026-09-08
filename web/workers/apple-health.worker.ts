@@ -26,8 +26,8 @@ self.onmessage = async (event: MessageEvent<{ file: File; today: string }>) => {
         reader.releaseLock();
       }
     }
-    const sources = await parseAppleHealth(chunks(), today);
-    self.postMessage({ kind: 'complete', sources });
+    const data = await parseAppleHealth(chunks(), today);
+    self.postMessage({ kind: 'complete', data });
   } catch (error) {
     self.postMessage({
       kind: 'error',

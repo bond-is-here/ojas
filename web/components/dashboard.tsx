@@ -1,4 +1,5 @@
 'use client';
+import { DataControls } from '@/components/data-controls';
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   ArrowRight,
@@ -53,10 +54,11 @@ import {
 } from '@/components/health-dialogs';
 import ConnectionsPanel from '@/components/connections-panel';
 import QuickCapture from '@/components/quick-capture';
+import LegacyLogImport from '@/components/legacy-log-import';
 import TrainingPanel from '@/components/training-panel';
 import { useTraining } from '@/hooks/use-training';
 import { useConnections } from '@/hooks/use-connections';
-import { useLocalWorkspace } from '@/hooks/use-local-workspace';
+import { useAccountWorkspace } from '@/hooks/use-account-workspace';
 import { mergeSourceEntries, SOURCE_NAMES } from '@/lib/connections';
 import {
   balance,
@@ -96,7 +98,15 @@ const HEADINGS: Record<string, string> = {
   Connections: 'Connections',
   Training: 'Training',
 };
-export default function Dashboard({ initialDay }: { initialDay: string }) {
+export default function Dashboard({
+  initialDay,
+  accountId,
+  accountLabel,
+}: {
+  initialDay: string;
+  accountId: string;
+  accountLabel: string;
+}) {
   const [section, setSection] = useState('Overview');
   const [calendar, setCalendar] = useState({
     day: initialDay,
@@ -104,17 +114,28 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
   });
   const { day, today } = calendar;
   const setDay = (day: string) => setCalendar((c) => ({ ...c, day }));
-  const { workspace, setWorkspace, ready, storageError } = useLocalWorkspace();
+  const {
+    workspace,
+    mutate,
+    ready,
+    loaded,
+    error: storageError,
+    saving,
+    pending,
+    retry,
+    refresh: refreshWorkspace,
+  } = useAccountWorkspace(accountId, day);
   const [modal, setModal] = useState<Modal>(null);
   const [logType, setLogType] = useState<EntryType>('activity');
   const [notice, setNotice] = useState('');
   const [removed, setRemoved] = useState<Entry | null>(null);
   const [lastAdded, setLastAdded] = useState<string | null>(null);
   const sourcesApplied = useRef(false);
-  const training = useTraining(day);
+  const training = useTraining(today, accountId);
   const connections = useConnections(
     day,
     !training.loading && !training.error && training.data.preferences.autoSync,
+    accountId,
   );
   const refreshTraining = training.refresh;
   useEffect(() => {
@@ -132,9 +153,9 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
   useEffect(() => {
     if (ready && connections.data.entries.length && !sourcesApplied.current) {
       sourcesApplied.current = true;
-      setWorkspace((w) => ({ ...w, demo: false }));
+      void mutate({ type: 'preferences', demo: false }).catch(() => undefined);
     }
-  }, [ready, connections.data.entries.length, setWorkspace]);
+  }, [ready, connections.data.entries.length, mutate]);
   /* oxlint-enable react/react-compiler */
   useEffect(() => {
     const refresh = () =>
@@ -182,8 +203,8 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
     setLogType(type);
     setModal('log');
   };
-  const addEntry = (entry: Entry) => {
-    setWorkspace((w) => ({ ...w, entries: [...w.entries, entry] }));
+  const addEntry = async (entry: Entry) => {
+    await mutate({ type: 'add', entry });
     setDay(entry.day);
     const hasSource = displayed.entries.some(
       (e) => e.source && e.type === entry.type && e.day === entry.day,
@@ -199,23 +220,23 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
   };
   const addWater = () => {
     const now = new Date();
-    addEntry({
+    void addEntry({
       id: crypto.randomUUID(),
       day,
       type: 'water',
       amount: 250,
       title: 'A glass of water',
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-    });
+    }).catch(() => undefined);
   };
   const removeEntry = (entry: Entry) => {
-    setWorkspace((w) => ({
-      ...w,
-      entries: w.entries.filter((e) => e.id !== entry.id),
-    }));
-    setRemoved(entry);
-    setLastAdded(null);
-    setNotice('Entry removed.');
+    void mutate({ type: 'remove', id: entry.id })
+      .then(() => {
+        setRemoved(entry);
+        setLastAdded(null);
+        setNotice('Entry removed.');
+      })
+      .catch(() => undefined);
   };
   const goalStatus =
     score >= 95
@@ -264,7 +285,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
             <div className="avatar">Y</div>
             <div>
               <strong>Your space</strong>
-              <span>Personal health</span>
+              <span title={accountLabel}>{accountLabel}</span>
             </div>
             <Settings2 size={16} />
           </button>
@@ -386,8 +407,36 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
           {storageError && (
             <div className="storage-message" role="alert">
               {storageError}
+              <button
+                className="text-link"
+                disabled={saving}
+                onClick={() => {
+                  void (pending ? retry() : refreshWorkspace()).catch(
+                    () => undefined,
+                  );
+                }}
+              >
+                Retry
+              </button>
             </div>
           )}
+          {saving && (
+            <output className="notice" aria-live="polite">
+              Saving to your account…
+            </output>
+          )}
+          {!loaded && !storageError && (
+            <output className="notice" aria-live="polite">
+              Loading your account…
+            </output>
+          )}
+          <LegacyLogImport
+            accountId={accountId}
+            enabled={ready}
+            onImport={async (entries) => {
+              await mutate({ type: 'import', entries });
+            }}
+          />
           {notice && (
             <output className="notice" aria-live="polite">
               <Check size={15} />
@@ -395,12 +444,12 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
               {lastAdded && (
                 <button
                   onClick={() => {
-                    setWorkspace((w) => ({
-                      ...w,
-                      entries: w.entries.filter((e) => e.id !== lastAdded),
-                    }));
-                    setLastAdded(null);
-                    setNotice('Entry undone.');
+                    void mutate({ type: 'remove', id: lastAdded })
+                      .then(() => {
+                        setLastAdded(null);
+                        setNotice('Entry undone.');
+                      })
+                      .catch(() => undefined);
                   }}
                 >
                   Undo
@@ -409,12 +458,12 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
               {removed && (
                 <button
                   onClick={() => {
-                    setWorkspace((w) => ({
-                      ...w,
-                      entries: [...w.entries, removed],
-                    }));
-                    setNotice('Entry restored.');
-                    setRemoved(null);
+                    void mutate({ type: 'add', entry: removed })
+                      .then(() => {
+                        setNotice('Entry restored.');
+                        setRemoved(null);
+                      })
+                      .catch(() => undefined);
                   }}
                 >
                   Undo
@@ -432,11 +481,15 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
           {section === 'Connections' ? (
             <ConnectionsPanel
               controller={connections}
-              onImported={() => setWorkspace((w) => ({ ...w, demo: false }))}
+              onImported={() => {
+                void mutate({ type: 'preferences', demo: false }).catch(
+                  () => undefined,
+                );
+              }}
               onHistoryRemoved={training.removeSourceHistory}
             />
           ) : section === 'Training' ? (
-            <TrainingPanel controller={training} day={day} />
+            <TrainingPanel controller={training} day={today} />
           ) : (
             <>
               <QuickCapture
@@ -475,7 +528,10 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                         <button
                           className="icon-control"
                           onClick={() =>
-                            setWorkspace((w) => ({ ...w, motion: !w.motion }))
+                            void mutate({
+                              type: 'preferences',
+                              motion: !workspace.motion,
+                            }).catch(() => undefined)
                           }
                           aria-label={
                             workspace.motion
@@ -499,7 +555,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
                         </button>
                       </div>
                     </section>
-                    <TrainingPanel controller={training} day={day} compact />
+                    <TrainingPanel controller={training} day={today} compact />
                   </div>
                   <div className="metric-grid essential-metrics">
                     <Metric
@@ -661,7 +717,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
               {workspace.demo ? 'Sample data · ' : ''}
               {connections.data.entries.length
                 ? 'Your sources, privately connected'
-                : 'Your manual log stays on this device'}
+                : 'Your log is saved privately to your account'}
             </span>
           </footer>
         </main>
@@ -669,7 +725,7 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
       <Dialog
         open={modal !== null}
         onOpenChange={(open) => {
-          if (!open) setModal(null);
+          if (!open && !saving) setModal(null);
         }}
       >
         <DialogContent
@@ -712,14 +768,17 @@ export default function Dashboard({ initialDay }: { initialDay: string }) {
             />
           )}
           {modal === 'preferences' && (
-            <PreferencesForm
-              workspace={workspace}
-              onSave={(changes) => {
-                setWorkspace((w) => ({ ...w, ...changes }));
-                setNotice('Your preferences are saved.');
-                setModal(null);
-              }}
-            />
+            <>
+              <PreferencesForm
+                workspace={workspace}
+                onSave={async (changes) => {
+                  await mutate({ type: 'preferences', ...changes });
+                  setNotice('Your preferences are saved.');
+                  setModal(null);
+                }}
+              />
+              <DataControls accountId={accountId} />
+            </>
           )}
           {modal === 'balance' && (
             <div className="balance-details">

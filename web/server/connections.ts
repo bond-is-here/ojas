@@ -17,6 +17,7 @@ import {
   PROVIDERS,
   type Tokens,
 } from './providers';
+import type { AppleImportData } from '../lib/apple-import.ts';
 export type ConnectionRow = {
   user_id: string;
   provider: SourceId;
@@ -236,9 +237,16 @@ export async function completeAuthorization(
   const cipher = await seal(tokens, `${user}:${provider}:tokens`);
   const result = await db
     .prepare(
-      "UPDATE connections SET token_cipher=?,expires_at=?,status='connected',last_error=NULL WHERE user_id=? AND provider=? AND revision=?",
+      "UPDATE connections SET token_cipher=?,expires_at=?,status='connected',last_error=NULL,revision=?,sync_until=0 WHERE user_id=? AND provider=? AND revision=?",
     )
-    .bind(cipher, tokens.expiresAt, user, provider, row.revision)
+    .bind(
+      cipher,
+      tokens.expiresAt,
+      crypto.randomUUID(),
+      user,
+      provider,
+      row.revision,
+    )
     .run();
   if (!result.meta.changes)
     throw new ApiError(
@@ -447,21 +455,59 @@ export async function syncProvider(user: string, provider: OAuthProvider) {
       .run();
   }
 }
-export async function importApple(
-  user: string,
-  entries: SyncedEntry[],
-  source: string,
-) {
+export async function importApple(user: string, data: AppleImportData) {
+  const { entries, source, fromDay, throughDay, exportedAt, metrics } = data;
+  const db = database();
+  const guard = `NOT EXISTS(SELECT 1 FROM apple_import_snapshots WHERE user_id=? AND type IN (${metrics.map(() => '?').join(',')}) AND exported_at>?)`;
+  const args = [user, ...metrics, exportedAt];
   const now = new Date().toISOString();
   const summary = JSON.stringify({ Device: source, Records: entries.length });
-  await database().batch([
-    ...entries.map((e) => insertEntry(user, e)),
-    database()
+  const statements = [
+    ...metrics.map((type) =>
+      db
+        .prepare(
+          `DELETE FROM source_entries WHERE user_id=? AND provider='apple-health' AND type=? AND day>=? AND day<=? AND ${guard}`,
+        )
+        .bind(user, type, fromDay, throughDay, ...args),
+    ),
+    ...entries.map((e) =>
+      db
+        .prepare(
+          `INSERT INTO source_entries(user_id,provider,record_id,day,time,type,amount,title) SELECT ?,'apple-health',?,?,?,?,?,? WHERE ${guard} ON CONFLICT(user_id,provider,record_id) DO UPDATE SET day=excluded.day,time=excluded.time,type=excluded.type,amount=excluded.amount,title=excluded.title`,
+        )
+        .bind(
+          user,
+          e.recordId,
+          e.day,
+          e.time,
+          e.type,
+          e.amount,
+          e.title,
+          ...args,
+        ),
+    ),
+    db
       .prepare(
-        "INSERT INTO connections (user_id,provider,status,last_sync,summary,revision) VALUES (?,'apple-health','imported',?,?,?) ON CONFLICT(user_id,provider) DO UPDATE SET status='imported',last_sync=excluded.last_sync,summary=excluded.summary,last_error=NULL",
+        `INSERT INTO connections (user_id,provider,status,last_sync,summary,revision) SELECT ?,'apple-health','imported',?,?,? WHERE ${guard} ON CONFLICT(user_id,provider) DO UPDATE SET status='imported',last_sync=excluded.last_sync,summary=excluded.summary,last_error=NULL`,
       )
-      .bind(user, now, summary, crypto.randomUUID()),
-  ]);
+      .bind(user, now, summary, crypto.randomUUID(), ...args),
+  ];
+  const connectionIndex = statements.length - 1;
+  statements.push(
+    ...metrics.map((type) =>
+      db
+        .prepare(
+          `INSERT INTO apple_import_snapshots(user_id,type,exported_at) SELECT ?,?,? WHERE ${guard} ON CONFLICT(user_id,type) DO UPDATE SET exported_at=excluded.exported_at`,
+        )
+        .bind(user, type, exportedAt, ...args),
+    ),
+  );
+  const result = await db.batch(statements);
+  if (!result[connectionIndex].meta.changes)
+    throw new ApiError(
+      'A newer Apple export is already saved. Choose the latest export to replace these days.',
+      409,
+    );
 }
 export async function disconnect(
   user: string,
@@ -492,6 +538,12 @@ export async function disconnect(
           'UPDATE connections SET last_sync=NULL,summary=NULL WHERE user_id=? AND provider=?',
         )
         .bind(user, provider),
+    );
+  if (removeData && provider === 'apple-health')
+    statements.push(
+      db
+        .prepare('DELETE FROM apple_import_snapshots WHERE user_id=?')
+        .bind(user),
     );
   await db.batch(statements);
 }

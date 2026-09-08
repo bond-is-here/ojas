@@ -130,7 +130,7 @@ await test('Oura burned calories are never confused with food intake', () => {
   assert.equal(totals(entries).sleep, 7.5);
   assert.equal(formatAmount('sleep', 7.999), '8h');
 });
-const xml = `<?xml version="1.0"?><HealthData locale="en_US">
+const xml = `<?xml version="1.0"?><HealthData locale="en_US"><ExportDate value="2026-09-05 23:59:00 -0700"/>
 <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Apple Watch" unit="count" value="1000" startDate="2026-09-05 08:00:00 -0700" endDate="2026-09-05 09:00:00 -0700"/>
 <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Apple Watch" unit="count" value="1000" startDate="2026-09-05 08:00:00 -0700" endDate="2026-09-05 09:00:00 -0700"/>
 <Record type="HKQuantityTypeIdentifierStepCount" sourceName="iPhone" unit="count" value="900" startDate="2026-09-05 08:00:00 -0700" endDate="2026-09-05 09:00:00 -0700"/>
@@ -144,7 +144,8 @@ async function* chunks(value: string, size = 37) {
   for (let i = 0; i < value.length; i += size) yield value.slice(i, i + size);
 }
 await test('Apple XML streams across tag boundaries, keeps devices separate, converts units, and merges duplicate sleep stages', async () => {
-  const sources = await parseAppleHealth(chunks(xml), day);
+  const parsed = await parseAppleHealth(chunks(xml), day);
+  const sources = parsed.sources;
   assert.equal(sources.length, 2);
   const watch = sources.find((s) => s.name === 'Apple Watch')!;
   assert.deepEqual(totals(watch.entries), {
@@ -160,7 +161,7 @@ await test('Apple XML streams across tag boundaries, keeps devices separate, con
   );
   assert.deepEqual(validateImportedEntries(watch.entries), watch.entries);
   const again = await parseAppleHealth(chunks(xml, 91), day);
-  assert.deepEqual(again, sources);
+  assert.deepEqual(again, parsed);
   await assert.rejects(
     parseAppleHealth(chunks(xml.replace('</HealthData>', '')), day),
     /incomplete/,
@@ -216,6 +217,32 @@ await test('OAuth credentials go only to fixed token endpoints and rotated refre
     assert.equal(tokens.refreshToken, 'rotated-refresh');
     assert.equal(tokens.accessToken, 'access');
     assert.ok(tokens.expiresAt > Date.now() + 3500000);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+await test('temporary OAuth token outages remain retryable without revoking the connection', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const [responseStatus, expectedStatus] of [
+      [503, 502],
+      [429, 429],
+      [400, 409],
+    ]) {
+      globalThis.fetch = async () =>
+        Response.json(
+          { error: 'synthetic_failure' },
+          { status: responseStatus },
+        );
+      await assert.rejects(
+        exchangeTokens(
+          'whoop',
+          { clientId: 'client', secret: 'secret' },
+          { grant_type: 'refresh_token', refresh_token: 'refresh' },
+        ),
+        { status: expectedStatus },
+      );
+    }
   } finally {
     globalThis.fetch = original;
   }

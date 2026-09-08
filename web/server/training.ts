@@ -83,7 +83,7 @@ export async function saveWorkout(user: string, input: unknown) {
           .run()
       : await db
           .prepare(
-            'UPDATE workout_sessions SET day=?,status=?,version=?,payload=? WHERE user_id=? AND id=? AND version=?',
+            "UPDATE workout_sessions SET day=?,status=?,version=?,payload=? WHERE user_id=? AND id=? AND version=? AND (status='active' OR ?='completed')",
           )
           .bind(
             next.day,
@@ -93,6 +93,7 @@ export async function saveWorkout(user: string, input: unknown) {
             user,
             next.id,
             version,
+            next.status,
           )
           .run();
   if (!result.meta.changes) {

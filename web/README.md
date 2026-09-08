@@ -4,7 +4,7 @@ A minimal health dashboard built with React, TypeScript, Vinext, and Three.js. A
 
 ## Run locally
 
-Requires Node.js 22.13+ and pnpm.
+Requires Node.js 22.18+ and pnpm.
 
 ```sh
 pnpm install
@@ -26,7 +26,7 @@ Open the address printed by the development server. Visit `/signin-with-chatgpt`
 - A transparent daily goal-completion score, not a clinical health assessment
 - Seven-day category charts, a full journal, entry removal and undo
 - Quick water logging and a pausable breathing timer
-- Browser-local manual entries and optional, clearly labeled sample data
+- Account-saved manual entries and optional, clearly labeled sample data; new accounts start empty
 - Quick capture recognizes explicit units (for example `water 500 ml` or `lunch 520 kcal`), previews the amount, and saves on Enter. Water shortcuts and recent manual entries can be repeated with one tap, with Undo. Ambiguous inputs do not create records or guessed food totals.
 
 ## Workout plans
@@ -39,7 +39,7 @@ Plans, workout summaries, and set logs use D1. Only one manual workout can be ac
 
 ## Connections
 
-Apple Watch data is available through Apple Health imports. In the iPhone Health app, export all health data, unzip it, and choose `export.xml` in Connections. A browser worker reads the file, retains only the last 30 days, and lets you choose a source before importing its daily totals. Only the selected totals are uploaded; the original XML stays on the device. Supported records include steps, asleep duration, dietary energy, and water. Re-importing replaces the same source's totals for the same day and metric.
+Apple Watch data is available through Apple Health imports. In the iPhone Health app, export all health data, unzip it, and choose `export.xml` in Connections. A browser worker reads a bounded stream and uses the export's own snapshot date to select its last 30 days. Choose a separate device/app for each metric, review daily totals, and import only those selections. The original XML and unselected source data stay on the device. Supported records include steps, asleep duration, dietary energy, and water. Selected metrics replace their covered Apple history, including removed days; other metrics and older dates are retained. An older snapshot cannot overwrite a newer import. Explicit empty selections can clear a metric's covered window.
 
 Direct browser access to HealthKit is unavailable; automatic Apple Health sync would require a native companion app. See [Apple's HealthKit setup](https://developer.apple.com/documentation/Xcode/configuring-healthkit-access).
 
@@ -54,9 +54,11 @@ Data priority selects one source per metric and day, preventing overlapping prov
 
 ## Storage and hosting
 
-Manual entries and goals remain in this browser's local storage; clearing browser data removes them. Imported daily totals, source preferences, and connection metadata are stored in the site's D1 database per authenticated account. Client secrets and OAuth tokens are encrypted with AES-GCM, with account and provider bound to the ciphertext. Credentials are never returned by the Connections API. Mutating routes require the configured site origin; OAuth callbacks validate one-time state and a browser cookie.
+Manual entries, goals, workouts, imported totals, preferences, and connection metadata are stored in D1 per authenticated account. Switching accounts cannot display the previous account's log; stale tabs must reload before writing as a different account. Client secrets and OAuth tokens are encrypted with AES-GCM, with account and provider bound to the ciphertext. Credentials are never returned by the Connections or export APIs. Mutating routes require the configured site origin; OAuth callbacks validate one-time state and a browser cookie. Authorization start also checks the expected account.
 
-Manual edits read the latest stored workspace under a shared Web Lock when the browser supports it, preventing simultaneous tabs from overwriting each other's logs. If storage is unreadable or full, Ojas preserves its saved copy and clearly marks new changes as session-only. Workout saves retry an uncertain request before sending later edits; validation failures allow a corrected draft to be saved.
+Pending manual saves use account-scoped, per-request recovery records and server receipts. A retry cannot duplicate a saved entry or resurrect one removed afterward, and another tab's acknowledgment cannot erase a pending request. Workout recovery journals preserve the exact in-flight attempt, newer edits, and buffered duration across reloads. Resume selects a matching recovery copy; version conflicts stay visible rather than silently rebasing. When browser storage is unavailable, Ojas retains the in-memory draft and asks you to keep the tab open until saved.
+
+Older browser-only logs require an explicit ownership confirmation before importing into an account; originals are retained. Goals from an older browser can be re-entered in Preferences. Settings can export all account history as JSON Lines or download browser recovery copies, including the original legacy log. Saved records are read from the server, not a browser-wide cache.
 
 Wearable sync reconciles corrected and removed records only inside its fetched history window. Older history is retained, and a failed optional workout request leaves prior workouts intact. WHOOP sleep reconciliation conservatively retains partial boundary days because its API uses timestamps while stored sleep totals use local dates.
 
@@ -69,9 +71,10 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
+pnpm test:http
 ```
 
-Tests cover source precedence, import parsing, unit conversion, sleep intervals, provider mappings, and mocked OAuth token refresh and pagination. `tests/http-smoke.mjs` additionally exercises the compiled Worker against an isolated local D1 database with synthetic users, including account isolation, origin enforcement, repeated imports, secret redaction, OAuth state, and disconnect behavior. Run that smoke test only against a raw local Worker on port 3001 with isolated persistence and a test encryption key, never against a deployed site or real account data. It emulates the trusted Sites ingress header; the development auth shim correctly strips client-supplied identity headers.
+Tests cover source precedence, streamed XML structure, snapshots, unit conversion, sleep intervals, provider mappings, and mocked OAuth token refresh and pagination. `pnpm test:http` creates a temporary local D1 database, applies every migration, starts the compiled Worker on an available localhost port, and runs connection, workout and workspace HTTP checks with synthetic users. It cleans up its Worker and database afterward. It emulates the trusted Sites ingress header; the development auth shim correctly strips client-supplied identity headers. The GitHub checks workflow runs typecheck, lint, regressions, build and these isolated HTTP tests.
 
 Additional tests cover quick-log ambiguity, running and paused timers, plan rules, overlapping wearable sessions, and missing workout permissions. `tests/training-http-smoke.mjs` verifies account isolation, idempotent and concurrent session starts, version conflicts, set persistence, and completion against the isolated local Worker.
 

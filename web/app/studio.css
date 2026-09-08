@@ -1485,3 +1485,68 @@
     transition: none !important;
   }
 }
+.form-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  display: contents;
+}
+.form-fields:disabled {
+  opacity: 0.65;
+}
+.data-controls {
+  display: grid;
+  gap: 0.8rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+.import-daily-review > div { max-height: 15rem; overflow-y: auto; }
+.import-daily-review p { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.8rem; }
+.sign-in-panel {
+  min-height: 100svh;
+  max-width: 36rem;
+  margin: auto;
+  padding: 4rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1.5rem;
+}
+.sign-in-panel h1 {
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  letter-spacing: -0.06em;
+  line-height: 1.1;
+}
+.sign-in-panel p {
+  color: #abb8b3;
+  line-height: 1.6;
+}
+.legacy-import {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #34413c;
+  border-radius: 16px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+.legacy-import p {
+  color: #9dada5;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  max-width: 38rem;
+  margin-top: 0.4rem;
+}
+.legacy-import button {
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .legacy-import {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 1rem;
+  }
+}

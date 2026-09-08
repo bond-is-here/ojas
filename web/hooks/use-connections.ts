@@ -8,12 +8,16 @@ import {
 export async function connectionRequest<T = Record<string, unknown>>(
   path: string,
   body?: unknown,
+  accountId?: string,
 ): Promise<T> {
   const response = await fetch(`/api/connections${path}`, {
+    signal: AbortSignal.timeout(path.endsWith('/sync') ? 130000 : 20000),
     method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin',
-    headers:
-      body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers: {
+      ...(accountId ? { 'X-Ojas-Account': accountId } : {}),
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',
   });
@@ -29,7 +33,19 @@ export async function connectionRequest<T = Record<string, unknown>>(
   }
   return data as T;
 }
-export function useConnections(day: string, autoSync = false) {
+export type ConnectionRequest = <T = Record<string, unknown>>(
+  path: string,
+  body?: unknown,
+) => Promise<T>;
+export function useConnections(
+  day: string,
+  autoSync = false,
+  accountId?: string,
+) {
+  const request: ConnectionRequest = useCallback(
+    (path, body) => connectionRequest(path, body, accountId),
+    [accountId],
+  );
   const [data, setData] = useState<ConnectionsData>({
     connections: [],
     entries: [],
@@ -52,7 +68,7 @@ export function useConnections(day: string, autoSync = false) {
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const next = await connectionRequest<ConnectionsData>(
+      const next = await request<ConnectionsData>(
         `?day=${encodeURIComponent(day)}`,
       );
       if (
@@ -82,7 +98,7 @@ export function useConnections(day: string, autoSync = false) {
       )
         setLoading(false);
     }
-  }, [day]);
+  }, [day, request]);
   const sync = useCallback(
     async (provider: SourceId) => {
       if (syncing.current)
@@ -90,7 +106,7 @@ export function useConnections(day: string, autoSync = false) {
       syncing.current = true;
       setBusy(provider);
       try {
-        const result = await connectionRequest<{ count: number }>(
+        const result = await request<{ count: number }>(
           `/${provider}/sync`,
           {},
         );
@@ -104,7 +120,7 @@ export function useConnections(day: string, autoSync = false) {
         if (mounted.current) setBusy(null);
       }
     },
-    [refresh],
+    [refresh, request],
   );
   /* oxlint-disable react/react-compiler -- Fetch stored source state on mount; asynchronous results update the view. */
   useEffect(() => {
@@ -162,6 +178,6 @@ export function useConnections(day: string, autoSync = false) {
       if (interval) clearInterval(interval);
     };
   }, [refresh, sync, autoSync]);
-  return { data, loading, error, busy, refresh, sync };
+  return { data, loading, error, busy, refresh, sync, request, accountId };
 }
 export type ConnectionsController = ReturnType<typeof useConnections>;

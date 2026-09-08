@@ -270,12 +270,14 @@ await test('removing source history invalidates an in-flight training response',
   const response = deferred();
   const original = globalThis.fetch;
   try {
+    let calls = 0;
     globalThis.fetch = async () => {
+      const first = ++calls === 1;
       await response.promise;
       return Response.json({
         preferences: trainingModel.DEFAULT_PLAN,
         sessions: [],
-        imported: [sourceWorkout],
+        imported: first ? [sourceWorkout] : [],
       });
     };
     const { useTraining } = loadModule('hooks/use-training.ts', {
@@ -290,7 +292,9 @@ await test('removing source history invalidates an in-flight training response',
     assert.deepEqual(states[0].imported, []);
     response.resolve();
     await older;
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(states[0].imported, []);
+    assert.equal(states[1], false);
   } finally {
     globalThis.fetch = original;
   }
@@ -320,5 +324,42 @@ await test('provider snapshots identify successful empty workout collections sep
     );
   } finally {
     globalThis.fetch = original;
+  }
+});
+await test('reauthorization invalidates an older in-flight token refresh', async () => {
+  const h = serverHarness();
+  try {
+    h.seed(Date.now() - 1000);
+    const started = deferred(),
+      finish = deferred();
+    h.provider.beforeRefresh = async () => {
+      started.resolve();
+      await finish.promise;
+    };
+    h.sqlite
+      .prepare(
+        'INSERT INTO oauth_states(state_hash,user_id,provider,revision,expires_at) VALUES (?,?,?,?,?)',
+      )
+      .run('state', 'user', 'oura', 'revision-1', Date.now() + 60000);
+    const syncing = h.api.syncProvider('user', 'oura');
+    await started.promise;
+    await h.api.completeAuthorization('user', 'oura', 'state', 'code');
+    finish.resolve();
+    await assert.rejects(syncing, { status: 409 });
+    const row = h.sqlite
+      .prepare(
+        'SELECT token_cipher,status,sync_until,last_error,revision FROM connections',
+      )
+      .get()!;
+    assert.equal(
+      JSON.parse(String(row.token_cipher)).accessToken,
+      'new-authorization',
+    );
+    assert.equal(row.status, 'connected');
+    assert.equal(row.sync_until, 0);
+    assert.equal(row.last_error, null);
+    assert.notEqual(row.revision, 'revision-1');
+  } finally {
+    h.sqlite.close();
   }
 });

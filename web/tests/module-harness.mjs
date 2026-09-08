@@ -28,10 +28,10 @@ export function loadModule(file, dependencies) {
 }
 export function serverHarness() {
   const sqlite = new DatabaseSync(':memory:');
-  for (const file of [
-    '0000_melodic_thena.sql',
-    '0001_spooky_millenium_guard.sql',
-  ])
+  for (const file of fs
+    .readdirSync(new URL('drizzle/', root))
+    .filter((file) => file.endsWith('.sql'))
+    .sort())
     sqlite.exec(fs.readFileSync(new URL(`drizzle/${file}`, root), 'utf8'));
   const hooks = { before: async (_query, _args) => {} };
   const db = {
@@ -48,6 +48,11 @@ export function serverHarness() {
         },
         async run() {
           await hooks.before(query, args);
+          if (/^SELECT\b/i.test(query))
+            return {
+              results: sqlite.prepare(query).all(...args),
+              meta: { changes: 0 },
+            };
           const result = sqlite.prepare(query).run(...args);
           return { meta: { changes: Number(result.changes) } };
         },
@@ -92,6 +97,12 @@ export function serverHarness() {
       return provider.data;
     },
     async exchangeTokens(_provider, _credentials, grant) {
+      if (grant.grant_type === 'authorization_code')
+        return {
+          accessToken: 'new-authorization',
+          refreshToken: 'new-refresh',
+          expiresAt: Date.now() + 3600000,
+        };
       provider.refreshSubmissions.push(grant.refresh_token);
       if (grant.refresh_token !== provider.validRefresh)
         throw new ApiError('Refresh token is no longer valid.', 409);
@@ -137,7 +148,7 @@ export function serverHarness() {
         'revision-1',
       );
   }
-  return { sqlite, hooks, provider, api, seed };
+  return { sqlite, hooks, provider, api, seed, runtime };
 }
 export function hookHarness() {
   const states = [];

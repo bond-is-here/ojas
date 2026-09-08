@@ -85,3 +85,40 @@ export const sourceWorkouts = sqliteTable(
     index('idx_source_workouts_user_day').on(t.userId, t.day),
   ],
 );
+export const manualEntries = sqliteTable(
+  'manual_entries',
+  {
+    userId: text('user_id').notNull(),
+    id: text('id').notNull(),
+    day: text('day').notNull(),
+    payload: text('payload').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    index('idx_manual_entries_user_day').on(t.userId, t.day),
+  ],
+);
+export const workspacePreferences = sqliteTable('workspace_preferences', {
+  userId: text('user_id').primaryKey(),
+  goals: text('goals').notNull(),
+  demo: integer('demo').notNull().default(0),
+  motion: integer('motion').notNull().default(1),
+});
+export const workspaceReceipts = sqliteTable(
+  'workspace_receipts',
+  {
+    userId: text('user_id').notNull(),
+    id: text('id').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.id] })],
+);
+export const appleImportSnapshots = sqliteTable(
+  'apple_import_snapshots',
+  {
+    userId: text('user_id').notNull(),
+    type: text('type').notNull(),
+    exportedAt: text('exported_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.type] })],
+);

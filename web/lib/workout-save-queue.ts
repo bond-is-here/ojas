@@ -1,4 +1,10 @@
 import type { Workout } from './training.ts';
+export type WorkoutQueueState = {
+  version: number;
+  pending: Workout | null;
+  retry: Workout | null;
+  rejected: boolean;
+};
 
 export class WorkoutSaveError extends Error {
   status: number;
@@ -15,8 +21,23 @@ export class WorkoutSaveQueue {
   private retry: Workout | null = null;
   private rejected = false;
   private running: Promise<Workout | undefined> | null = null;
-  constructor(version: number) {
-    this.version = version;
+  onChange: (state: WorkoutQueueState) => void = () => {};
+  observe(callback: (state: WorkoutQueueState) => void) {
+    this.onChange = callback;
+  }
+  constructor(version: number, recovered?: WorkoutQueueState) {
+    this.version = recovered?.version ?? version;
+    this.pending = recovered?.pending ?? null;
+    this.retry = recovered?.retry ?? null;
+    this.rejected = recovered?.rejected ?? false;
+  }
+  snapshot(): WorkoutQueueState {
+    return structuredClone({
+      version: this.version,
+      pending: this.pending,
+      retry: this.retry,
+      rejected: this.rejected,
+    });
   }
   get hasPending() {
     return !!(this.pending || this.retry || this.running);
@@ -27,6 +48,7 @@ export class WorkoutSaveQueue {
       this.rejected = false;
     }
     this.pending = workout;
+    this.onChange(this.snapshot());
   }
   flush(
     save: (workout: Workout) => Promise<Workout>,
@@ -40,16 +62,20 @@ export class WorkoutSaveQueue {
           version: this.version,
         };
         if (!this.retry) this.pending = null;
+        this.retry = attempt;
+        this.onChange(this.snapshot());
         try {
           latest = await save(attempt);
           this.version = latest.version;
           this.retry = null;
           this.rejected = false;
+          this.onChange(this.snapshot());
         } catch (error) {
           this.retry = attempt;
           this.rejected =
             error instanceof WorkoutSaveError &&
             [400, 422].includes(error.status);
+          this.onChange(this.snapshot());
           if (this.rejected && this.pending) {
             this.retry = null;
             continue;
