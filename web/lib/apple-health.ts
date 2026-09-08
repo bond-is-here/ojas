@@ -1,43 +1,26 @@
 import type { SyncedEntry } from './connections.ts';
 import { shiftDay, validDay, TYPE_META, type EntryType } from './health.ts';
+import { xmlTags, xmlAttributes } from './xml-tags.ts';
 type Interval = { start: number; end: number; endDay: string };
 export type AppleSource = { name: string; entries: SyncedEntry[] };
-function decode(value: string) {
-  return value.replace(
-    /&(amp|quot|apos|lt|gt|#\d+|#x[\da-f]+);/gi,
-    (match, entity: string) => {
-      if (entity[0] === '#') {
-        const code =
-          entity[1].toLowerCase() === 'x'
-            ? parseInt(entity.slice(2), 16)
-            : Number(entity.slice(1));
-        return code >= 0 && code <= 0x10ffff
-          ? String.fromCodePoint(code)
-          : match;
-      }
-      return (
-        (
-          { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' } as Record<
-            string,
-            string
-          >
-        )[entity] || match
-      );
-    },
-  );
-}
-function attributes(tag: string) {
-  const result: Record<string, string> = {};
-  for (const match of tag.matchAll(/([\w]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g))
-    result[match[1]] = decode(match[2] ?? match[3]);
-  return result;
-}
+export type AppleExport = {
+  sources: AppleSource[];
+  fromDay: string;
+  throughDay: string;
+  exportedAt: string;
+};
 function appleTime(value: string) {
   const match =
     /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*([+-]\d{2}):?(\d{2})$/.exec(
       value,
     );
-  return match
+  return match &&
+    validDay(match[1]) &&
+    Number(match[2].slice(0, 2)) < 24 &&
+    Number(match[2].slice(3, 5)) < 60 &&
+    Number(match[2].slice(6)) < 60 &&
+    Math.abs(Number(match[3])) <= 14 &&
+    Number(match[4]) < 60
     ? Date.parse(`${match[1]}T${match[2]}${match[3]}:${match[4]}`)
     : NaN;
 }
@@ -54,7 +37,9 @@ export function sleepByDay(intervals: Interval[]): Map<string, number> {
     } else merged.push({ ...part });
   }
   const days = new Map<string, number>();
-  let session: { end: number; endDay: string; duration: number } | undefined;
+  let session:
+    | { start: number; end: number; endDay: string; duration: number }
+    | undefined;
   const finish = () => {
     if (session)
       days.set(
@@ -63,13 +48,18 @@ export function sleepByDay(intervals: Interval[]): Map<string, number> {
       );
   };
   for (const part of merged) {
-    if (session && part.start - session.end <= 3 * 3600000) {
+    if (
+      session &&
+      part.start - session.end <= 3 * 3600000 &&
+      part.end - session.start <= 24 * 3600000
+    ) {
       session.duration += part.end - part.start;
       session.end = part.end;
       session.endDay = part.endDay;
     } else {
       finish();
       session = {
+        start: part.start,
         end: part.end,
         endDay: part.endDay,
         duration: part.end - part.start,
@@ -82,125 +72,207 @@ export function sleepByDay(intervals: Interval[]): Map<string, number> {
 export async function parseAppleHealth(
   chunks: AsyncIterable<string>,
   today: string,
-): Promise<AppleSource[]> {
-  const earliest = shiftDay(today, -29);
-  const readFrom = shiftDay(earliest, -2);
-  let carry = '';
+): Promise<AppleExport> {
+  let earliest = shiftDay(today, -29);
+  let readFrom = shiftDay(earliest, -2);
+  let throughDay = today;
+  let exportedAt = '';
+  let snapshot = NaN;
   let rootSeen = false;
   let rootClosed = false;
+  const stack: string[] = [];
   let totalMatched = 0;
   const devices = new Map<
     string,
     { totals: Map<string, number>; sleep: Interval[]; seen: Set<string> }
   >();
-  for await (const chunk of chunks) {
-    carry += chunk;
-    rootSeen ||= /<HealthData\b/.test(carry);
-    rootClosed ||= /<\/HealthData\s*>/.test(carry);
-    let start = 0;
-    const pattern = /<Record\b([^>]*?)>/g;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(carry)) !== null) {
-      start = pattern.lastIndex;
-      const a = attributes(match[1]);
-      const day = a.startDate?.slice(0, 10);
-      const endDay = a.endDate?.slice(0, 10);
+  for await (const tag of xmlTags(chunks)) {
+    if (!tag.startsWith('<') || tag.startsWith('<![CDATA[')) {
+      if (!rootSeen || rootClosed)
+        throw new Error(
+          'Choose a complete export.xml without extra content outside HealthData.',
+        );
+      continue;
+    }
+    if (tag.startsWith('<?')) {
+      if (!tag.endsWith('?>')) throw new Error('Invalid XML declaration.');
+      continue;
+    }
+    if (tag.startsWith('<!DOCTYPE')) {
+      if (rootSeen || !/^<!DOCTYPE\s+HealthData\b/.test(tag))
+        throw new Error('Choose export.xml from Apple Health.');
+      continue;
+    }
+    const close = /^<\/([\w:.-]+)\s*>$/.exec(tag);
+    if (close) {
+      if (stack.pop() !== close[1])
+        throw new Error(
+          'This export is incomplete or has mismatched XML tags.',
+        );
+      if (close[1] === 'HealthData') rootClosed = true;
+      continue;
+    }
+    const name = /^<([\w:.-]+)(?:\s|\/?>)/.exec(tag)?.[1];
+    if (
+      !name ||
+      rootClosed ||
+      (!stack.length && (rootSeen || name !== 'HealthData'))
+    )
+      throw new Error('Choose a complete export.xml from Apple Health.');
+    if (!rootSeen) rootSeen = true;
+    const parent = stack.at(-1);
+    const a = xmlAttributes(tag);
+    if (!/\/\s*>$/.test(tag)) stack.push(name);
+    else if (name === 'HealthData') rootClosed = true;
+    if (stack.length > 64)
+      throw new Error('The XML file contains too many nested elements.');
+    if (name === 'ExportDate' && parent === 'HealthData') {
       if (
-        !validDay(day) ||
-        !validDay(endDay) ||
-        endDay < readFrom ||
-        day > today
+        exportedAt ||
+        !Number.isFinite(appleTime(a.value || '')) ||
+        a.value.slice(0, 10) > shiftDay(today, 1) ||
+        a.value.slice(0, 10) < shiftDay(today, -90)
       )
-        continue;
-      let type: EntryType | undefined;
-      if (a.type === 'HKQuantityTypeIdentifierStepCount') type = 'activity';
-      else if (a.type === 'HKQuantityTypeIdentifierDietaryEnergyConsumed')
-        type = 'nutrition';
-      else if (a.type === 'HKQuantityTypeIdentifierDietaryWater')
-        type = 'water';
-      else if (a.type === 'HKCategoryTypeIdentifierSleepAnalysis')
-        type = 'sleep';
-      else continue;
+        throw new Error('Choose a recent export with a valid ExportDate.');
+      snapshot = appleTime(a.value);
+      exportedAt = new Date(snapshot).toISOString();
+      throughDay = a.value.slice(0, 10);
+      earliest = shiftDay(throughDay, -29);
+      readFrom = shiftDay(earliest, -2);
+    }
+    if (name !== 'Record' || parent !== 'HealthData') continue;
+    if (!exportedAt)
+      throw new Error(
+        'This export is missing its ExportDate before the records.',
+      );
+    const day = a.startDate?.slice(0, 10);
+    const endDay = a.endDate?.slice(0, 10);
+    let type: EntryType | undefined;
+    if (a.type === 'HKQuantityTypeIdentifierStepCount') type = 'activity';
+    else if (a.type === 'HKQuantityTypeIdentifierDietaryEnergyConsumed')
+      type = 'nutrition';
+    else if (a.type === 'HKQuantityTypeIdentifierDietaryWater') type = 'water';
+    else if (a.type === 'HKCategoryTypeIdentifierSleepAnalysis') type = 'sleep';
+    else continue;
+    if (!validDay(day) || !validDay(endDay))
+      throw new Error(
+        'A health record has an invalid date. Choose a fresh export.',
+      );
+    if (endDay < readFrom || day > throughDay) continue;
+    const begin = appleTime(a.startDate || ''),
+      end = appleTime(a.endDate || '');
+    if (
+      !Number.isFinite(begin) ||
+      !Number.isFinite(end) ||
+      end < begin ||
+      a.type.length > 100 ||
+      (a.value?.length || 0) > 100 ||
+      (a.unit?.length || 0) > 24 ||
+      (a.sourceName?.length || 0) > 100
+    )
+      throw new Error(
+        'A recent health record is invalid. Export your Health data again before importing.',
+      );
+    if (end > snapshot)
+      throw new Error(
+        'A health record is newer than this export’s date. Choose a fresh export.',
+      );
+    if (
+      type === 'sleep' &&
+      ![
+        'HKCategoryValueSleepAnalysisAsleep',
+        'HKCategoryValueSleepAnalysisAsleepUnspecified',
+        'HKCategoryValueSleepAnalysisAsleepCore',
+        'HKCategoryValueSleepAnalysisAsleepDeep',
+        'HKCategoryValueSleepAnalysisAsleepREM',
+        '1',
+        '3',
+        '4',
+        '5',
+      ].includes(a.value)
+    ) {
       if (
-        type === 'sleep' &&
         ![
-          'HKCategoryValueSleepAnalysisAsleep',
-          'HKCategoryValueSleepAnalysisAsleepUnspecified',
-          'HKCategoryValueSleepAnalysisAsleepCore',
-          'HKCategoryValueSleepAnalysisAsleepDeep',
-          'HKCategoryValueSleepAnalysisAsleepREM',
-          '1',
-          '3',
-          '4',
-          '5',
+          '0',
+          '2',
+          'HKCategoryValueSleepAnalysisInBed',
+          'HKCategoryValueSleepAnalysisAwake',
         ].includes(a.value)
       )
-        continue;
-      const source = a.sourceName?.trim().slice(0, 100) || 'Apple Health';
-      let device = devices.get(source);
-      if (!device) {
-        if (devices.size >= 64)
-          throw new Error(
-            'This export contains too many sources. Use a smaller export.',
-          );
-        device = { totals: new Map(), sleep: [], seen: new Set() };
-        devices.set(source, device);
-      }
-      const key = [a.type, a.startDate, a.endDate, a.value, a.unit].join('|');
-      if (device.seen.has(key)) continue;
-      device.seen.add(key);
-      totalMatched++;
-      if (totalMatched > 250000)
         throw new Error(
-          'This export has too many recent records to process. Try a smaller export.',
+          'A sleep record has an unsupported state. Your saved history has not changed.',
         );
-      if (type === 'sleep') {
-        const begin = appleTime(a.startDate),
-          end = appleTime(a.endDate);
-        if (
-          Number.isFinite(begin) &&
-          Number.isFinite(end) &&
-          end > begin &&
-          end - begin <= 24 * 3600000
-        )
-          device.sleep.push({ start: begin, end, endDay });
-        continue;
-      }
-      if (day < earliest) continue;
-      let amount = Number(a.value);
-      if (!Number.isFinite(amount) || amount <= 0) continue;
-      if (type === 'activity' && a.unit !== 'count') continue;
-      if (type === 'nutrition') {
-        if (a.unit === 'kJ') amount /= 4.184;
-        else if (a.unit !== 'kcal') continue;
-      }
-      if (type === 'water') {
-        if (a.unit === 'L') amount *= 1000;
-        else if (a.unit === 'fl_oz_us') amount *= 29.5735295625;
-        else if (a.unit !== 'mL' && a.unit !== 'ml') continue;
-      }
-      const group = `${type}:${day}`;
-      device.totals.set(group, (device.totals.get(group) || 0) + amount);
+      continue;
     }
-    // Keep only an unfinished Record tag. The export's other elements are never evaluated.
-    carry = carry.slice(start);
-    const unfinished = carry.lastIndexOf('<Record');
-    carry = unfinished >= 0 ? carry.slice(unfinished) : carry.slice(-16);
-    if (carry.length > 1048576)
-      throw new Error('The XML file contains an invalid record.');
+    const source = a.sourceName?.trim().slice(0, 100) || 'Apple Health';
+    let device = devices.get(source);
+    if (!device) {
+      if (devices.size >= 64)
+        throw new Error(
+          'This export contains too many sources. Use a smaller export.',
+        );
+      device = { totals: new Map(), sleep: [], seen: new Set() };
+      devices.set(source, device);
+    }
+    const key = [a.type, a.startDate, a.endDate, a.value, a.unit].join('|');
+    if (device.seen.has(key)) continue;
+    device.seen.add(key);
+    totalMatched++;
+    if (totalMatched > 250000)
+      throw new Error(
+        'This export has too many recent records to process. Try a smaller export.',
+      );
+    if (type === 'sleep') {
+      if (end <= begin || end - begin > 24 * 3600000)
+        throw new Error(
+          'A sleep record has an invalid duration. Your saved history has not changed.',
+        );
+      if (
+        Number.isFinite(begin) &&
+        Number.isFinite(end) &&
+        end > begin &&
+        end - begin <= 24 * 3600000
+      )
+        device.sleep.push({ start: begin, end, endDay });
+      continue;
+    }
+    if (day < earliest) continue;
+    let amount = Number(a.value);
+    if (
+      !a.value?.trim() ||
+      !/^(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i.test(a.value)
+    )
+      throw new Error('A recent health record has an invalid quantity.');
+    if (!Number.isFinite(amount) || amount < 0)
+      throw new Error('A recent health record has an invalid quantity.');
+    if (type === 'activity' && a.unit !== 'count')
+      throw new Error('This steps record has an unsupported unit.');
+    if (type === 'nutrition') {
+      if (a.unit === 'kJ') amount /= 4.184;
+      else if (a.unit !== 'kcal')
+        throw new Error('This food record has an unsupported unit.');
+    }
+    if (type === 'water') {
+      if (a.unit === 'L') amount *= 1000;
+      else if (a.unit === 'fl_oz_us') amount *= 29.5735295625;
+      else if (a.unit !== 'mL' && a.unit !== 'ml')
+        throw new Error('This water record has an unsupported unit.');
+    }
+    const group = `${type}:${day}`;
+    device.totals.set(group, (device.totals.get(group) || 0) + amount);
   }
   if (!rootSeen)
     throw new Error(
       'Choose export.xml from an Apple Health export. ZIP files need to be unzipped first.',
     );
-  if (!rootClosed)
+  if (!rootClosed || stack.length || !exportedAt)
     throw new Error(
       'This export is incomplete. Choose the complete export.xml file.',
     );
   const sources: AppleSource[] = [];
   for (const [name, device] of devices) {
     for (const [day, amount] of sleepByDay(device.sleep))
-      if (day >= earliest && day <= today)
+      if (day >= earliest && day <= throughDay)
         device.totals.set(`sleep:${day}`, amount);
     const entries: SyncedEntry[] = [];
     for (const [recordId, value] of device.totals) {
@@ -208,7 +280,11 @@ export async function parseAppleHealth(
       const day = dateParts.join(':');
       const t = type as EntryType;
       const amount = t === 'sleep' ? value : Math.round(value);
-      if (amount <= 0 || amount > TYPE_META[t].max) continue;
+      if (amount > TYPE_META[t].max)
+        throw new Error(
+          `A daily ${TYPE_META[t].label.toLowerCase()} total is outside the supported range. Your saved history has not changed.`,
+        );
+      if (amount <= 0) continue;
       entries.push({
         id: `apple-health:${recordId}`,
         recordId,
@@ -226,9 +302,10 @@ export async function parseAppleHealth(
         entries: entries.sort((a, b) => b.day.localeCompare(a.day)),
       });
   }
-  if (!sources.length)
-    throw new Error(
-      'No supported steps, sleep, food, or water records were found in the last 30 days.',
-    );
-  return sources.sort((a, b) => b.entries.length - a.entries.length);
+  return {
+    sources: sources.sort((a, b) => b.entries.length - a.entries.length),
+    fromDay: earliest,
+    throughDay,
+    exportedAt,
+  };
 }

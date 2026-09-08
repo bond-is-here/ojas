@@ -23,7 +23,7 @@ const entry: Entry = {
   title: 'Water after a walk',
 };
 await test('personal entries stay isolated by date and survive switching off samples', () => {
-  const w = { ...DEFAULT_WORKSPACE, entries: [entry] };
+  const w = { ...DEFAULT_WORKSPACE, demo: true, entries: [entry] };
   assert.equal(totals(entriesForDay(w, today, today)).water, 1750);
   assert.deepEqual(entriesForDay({ ...w, demo: false }, today, today), [entry]);
   assert.deepEqual(
@@ -31,6 +31,16 @@ await test('personal entries stay isolated by date and survive switching off sam
     [],
   );
   assert.equal(w.entries.length, 1);
+});
+await test('new accounts start empty and personal totals contain no sample data', () => {
+  assert.equal(DEFAULT_WORKSPACE.demo, false);
+  assert.deepEqual(entriesForDay(DEFAULT_WORKSPACE, today, today), []);
+  assert.equal(
+    totals(
+      entriesForDay({ ...DEFAULT_WORKSPACE, entries: [entry] }, today, today),
+    ).water,
+    250,
+  );
 });
 await test('sample history has no future records and all totals match the daily log', () => {
   assert.deepEqual(sampleEntries(shiftDay(today, 1), today), []);

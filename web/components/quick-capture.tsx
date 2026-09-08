@@ -1,5 +1,5 @@
 'use client';
-import { useState, type SubmitEvent } from 'react';
+import { useRef, useState, type SubmitEvent } from 'react';
 import {
   ArrowUp,
   Check,
@@ -29,29 +29,52 @@ export default function QuickCapture({
   entries: Entry[];
   day: string;
   enabled: boolean;
-  onSave: (e: Entry) => void;
+  onSave: (e: Entry) => Promise<void>;
   onDetails: (type: EntryType) => void;
 }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [busy, setBusy] = useState(false);
+  const attempt = useRef<Entry | null>(null);
   const capture = parseQuickLog(input);
-  const save = (value: Capture) => {
-    if (!enabled) return;
+  const save = async (value: Capture) => {
+    if (!enabled || busy) return;
     const now = new Date();
-    onSave({
-      ...value,
-      id: crypto.randomUUID(),
-      day,
-      time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-    });
+    const previous = attempt.current;
+    const entry =
+      previous &&
+      previous.day === day &&
+      previous.type === value.type &&
+      previous.amount === value.amount &&
+      previous.title === value.title
+        ? previous
+        : {
+            ...value,
+            id: crypto.randomUUID(),
+            day,
+            time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+          };
+    attempt.current = entry;
+    setBusy(true);
+    try {
+      await onSave(entry);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Your entry could not be saved.',
+      );
+      return;
+    } finally {
+      setBusy(false);
+    }
+    attempt.current = null;
     setInput('');
     setError('');
     setSuccess(`${formatAmount(value.type, value.amount)} saved`);
   };
   const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (capture) save(capture);
+    if (capture) void save(capture);
     else
       setError(
         'Include one amount and unit, like “lunch 520 kcal”, “water 500 ml”, “sleep 7 h 30 min”, or “4k steps”.',
@@ -66,6 +89,7 @@ export default function QuickCapture({
           placeholder="Water 500 ml, lunch 520 kcal…"
           value={input}
           maxLength={160}
+          disabled={busy}
           onChange={(e) => {
             setInput(e.target.value);
             setError('');
@@ -83,7 +107,7 @@ export default function QuickCapture({
         </button>
         <button
           className="capture-submit"
-          disabled={!enabled || !input.trim()}
+          disabled={!enabled || busy || !input.trim()}
           aria-label={
             capture
               ? `Save ${formatAmount(capture.type, capture.amount)}`
@@ -111,8 +135,10 @@ export default function QuickCapture({
         {[250, 500].map((amount) => (
           <button
             key={amount}
-            disabled={!enabled}
-            onClick={() => save({ type: 'water', amount, title: 'Water' })}
+            disabled={!enabled || busy}
+            onClick={() => {
+              void save({ type: 'water', amount, title: 'Water' });
+            }}
           >
             <Droplets size={15} />
             <span>+{amount} ml</span>
@@ -127,8 +153,10 @@ export default function QuickCapture({
                 key={`${e.type}:${e.title}:${e.amount}`}
                 className="repeat-chip"
                 title={`Repeat ${e.title}: ${formatAmount(e.type, e.amount)}`}
-                disabled={!enabled}
-                onClick={() => save(e)}
+                disabled={!enabled || busy}
+                onClick={() => {
+                  void save(e);
+                }}
               >
                 <Icon size={15} />
                 <span>{e.title}</span>

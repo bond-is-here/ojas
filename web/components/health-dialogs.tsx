@@ -40,7 +40,7 @@ export function LogForm({
   type: EntryType;
   day: string;
   today: string;
-  onSave: (e: Entry) => void;
+  onSave: (e: Entry) => Promise<void>;
 }) {
   const [type, setType] = useState(initialType);
   const [amount, setAmount] = useState('');
@@ -52,8 +52,11 @@ export function LogForm({
   });
   const [error, setError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
-  const submit = (e: SubmitEvent<HTMLFormElement>) => {
+  const [busy, setBusy] = useState(false);
+  const entryId = useRef(crypto.randomUUID());
+  const submit = async (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (busy) return;
     const n = Number(amount);
     if (!validDay(entryDay) || entryDay > today) {
       setError('Choose today or a date in the past.');
@@ -69,143 +72,155 @@ export function LogForm({
       setError('Choose a valid time.');
       return;
     }
-    onSave({
-      id: crypto.randomUUID(),
-      type,
-      amount: n,
-      title: title.trim() || TYPE_META[type].placeholder,
-      day: entryDay,
-      time,
-    });
+    setBusy(true);
+    setError('');
+    try {
+      await onSave({
+        id: entryId.current,
+        type,
+        amount: n,
+        title: title.trim() || TYPE_META[type].placeholder,
+        day: entryDay,
+        time,
+      });
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Your entry could not be saved.',
+      );
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <form className="health-form" onSubmit={submit}>
-      <Tabs
-        value={type}
-        onValueChange={(value) => {
-          setType(value as EntryType);
-          setAmount('');
-          setTitle('');
-          setError('');
-        }}
-      >
-        <TabsList className="log-tabs" aria-label="Entry type">
-          {TYPES.map((t) => {
-            const Icon = ICONS[t];
-            return (
-              <TabsTrigger key={t} value={t}>
-                <Icon size={15} />
-                {TYPE_META[t].label}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
-      </Tabs>
-      <div className="field">
-        <label htmlFor="entry-amount">
-          {TYPE_META[type].amount}
-          <span>{TYPE_META[type].unit}</span>
-        </label>
-        <input
-          id="entry-amount"
-          type="number"
-          required
-          min={TYPE_META[type].step}
-          max={TYPE_META[type].max}
-          step={TYPE_META[type].step}
-          inputMode="decimal"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder={
-            type === 'sleep'
-              ? '7.5'
-              : type === 'water'
-                ? '250'
-                : type === 'activity'
-                  ? '2,000'
-                  : '420'
-          }
-        />
-        {type === 'water' && (
-          <div className="water-presets">
-            {[250, 500, 750].map((n) => (
-              <button
-                className={amount === String(n) ? 'selected' : ''}
-                type="button"
-                key={n}
-                onClick={() => setAmount(String(n))}
-              >
-                {n} mL
-              </button>
-            ))}
-          </div>
-        )}
-        {type === 'sleep' && (
-          <span className="field-help">
-            Use 7.5 for 7 hours and 30 minutes.
-          </span>
-        )}
-      </div>
-      <button
-        className="details-toggle"
-        type="button"
-        aria-expanded={showDetails}
-        onClick={() => setShowDetails(!showDetails)}
-      >
-        Details<span>{showDetails ? '−' : '+'}</span>
-      </button>
-      {showDetails && (
-        <>
-          <div className="field">
-            <label htmlFor="entry-title">
-              Label<span>Optional</span>
-            </label>
-            <input
-              id="entry-title"
-              type="text"
-              maxLength={100}
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={TYPE_META[type].placeholder}
-            />
-          </div>
-          <div className="field-pair">
-            <div className="field">
-              <label htmlFor="entry-date">Date</label>
-              <input
-                id="entry-date"
-                type="date"
-                required
-                max={today}
-                value={entryDay}
-                onChange={(e) => setEntryDay(e.target.value)}
-              />
+      <fieldset disabled={busy} className="form-fields">
+        <Tabs
+          value={type}
+          onValueChange={(value) => {
+            setType(value as EntryType);
+            setAmount('');
+            setTitle('');
+            setError('');
+          }}
+        >
+          <TabsList className="log-tabs" aria-label="Entry type">
+            {TYPES.map((t) => {
+              const Icon = ICONS[t];
+              return (
+                <TabsTrigger key={t} value={t}>
+                  <Icon size={15} />
+                  {TYPE_META[t].label}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </Tabs>
+        <div className="field">
+          <label htmlFor="entry-amount">
+            {TYPE_META[type].amount}
+            <span>{TYPE_META[type].unit}</span>
+          </label>
+          <input
+            id="entry-amount"
+            type="number"
+            required
+            min={TYPE_META[type].step}
+            max={TYPE_META[type].max}
+            step={TYPE_META[type].step}
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder={
+              type === 'sleep'
+                ? '7.5'
+                : type === 'water'
+                  ? '250'
+                  : type === 'activity'
+                    ? '2,000'
+                    : '420'
+            }
+          />
+          {type === 'water' && (
+            <div className="water-presets">
+              {[250, 500, 750].map((n) => (
+                <button
+                  className={amount === String(n) ? 'selected' : ''}
+                  type="button"
+                  key={n}
+                  onClick={() => setAmount(String(n))}
+                >
+                  {n} mL
+                </button>
+              ))}
             </div>
-            <div className="field">
-              <label htmlFor="entry-time">Time</label>
-              <input
-                id="entry-time"
-                type="time"
-                required
-                value={time}
-                onChange={(e) => setTime(e.target.value)}
-              />
-            </div>
-          </div>
-        </>
-      )}
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-      <div className="form-bottom">
-        <span>Saved only in this browser.</span>
-        <button className="primary-button" type="submit">
-          <Plus size={16} />
-          Save entry
+          )}
+          {type === 'sleep' && (
+            <span className="field-help">
+              Use 7.5 for 7 hours and 30 minutes.
+            </span>
+          )}
+        </div>
+        <button
+          className="details-toggle"
+          type="button"
+          aria-expanded={showDetails}
+          onClick={() => setShowDetails(!showDetails)}
+        >
+          Details<span>{showDetails ? '−' : '+'}</span>
         </button>
-      </div>
+        {showDetails && (
+          <>
+            <div className="field">
+              <label htmlFor="entry-title">
+                Label<span>Optional</span>
+              </label>
+              <input
+                id="entry-title"
+                type="text"
+                maxLength={100}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={TYPE_META[type].placeholder}
+              />
+            </div>
+            <div className="field-pair">
+              <div className="field">
+                <label htmlFor="entry-date">Date</label>
+                <input
+                  id="entry-date"
+                  type="date"
+                  required
+                  max={today}
+                  value={entryDay}
+                  onChange={(e) => setEntryDay(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="entry-time">Time</label>
+                <input
+                  id="entry-time"
+                  type="time"
+                  required
+                  value={time}
+                  onChange={(e) => setTime(e.target.value)}
+                />
+              </div>
+            </div>
+          </>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="form-bottom">
+          <span>Saved privately to your account.</span>
+          <button className="primary-button" type="submit">
+            <Plus size={16} />
+            {busy ? 'Saving…' : 'Save entry'}
+          </button>
+        </div>
+      </fieldset>
     </form>
   );
 }
@@ -214,14 +229,16 @@ export function PreferencesForm({
   onSave,
 }: {
   workspace: Workspace;
-  onSave: (w: Pick<Workspace, 'goals' | 'demo' | 'motion'>) => void;
+  onSave: (w: Pick<Workspace, 'goals' | 'demo' | 'motion'>) => Promise<void>;
 }) {
   const [goals, setGoals] = useState(workspace.goals);
   const [demo, setDemo] = useState(workspace.demo);
   const [motion, setMotion] = useState(workspace.motion);
   const [error, setError] = useState('');
-  const submit = (e: SubmitEvent<HTMLFormElement>) => {
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (busy) return;
     for (const t of TYPES)
       if (!validAmount(t, goals[t])) {
         setError(
@@ -229,68 +246,84 @@ export function PreferencesForm({
         );
         return;
       }
-    onSave({ goals, demo, motion });
+    setBusy(true);
+    setError('');
+    try {
+      await onSave({ goals, demo, motion });
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Your preferences could not be saved.',
+      );
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <form className="health-form" onSubmit={submit}>
-      <div className="preferences-goals">
-        {TYPES.map((t) => (
-          <div className="field" key={t}>
-            <label htmlFor={`goal-${t}`}>
-              {TYPE_META[t].label}
-              <span>{TYPE_META[t].unit} / day</span>
-            </label>
-            <input
-              id={`goal-${t}`}
-              required
-              type="number"
-              min={TYPE_META[t].step}
-              max={TYPE_META[t].max}
-              step={TYPE_META[t].step}
-              value={goals[t] || ''}
-              onChange={(e) =>
-                setGoals({ ...goals, [t]: Number(e.target.value) })
-              }
-            />
+      <fieldset disabled={busy} className="form-fields">
+        <div className="preferences-goals">
+          {TYPES.map((t) => (
+            <div className="field" key={t}>
+              <label htmlFor={`goal-${t}`}>
+                {TYPE_META[t].label}
+                <span>{TYPE_META[t].unit} / day</span>
+              </label>
+              <input
+                id={`goal-${t}`}
+                required
+                type="number"
+                min={TYPE_META[t].step}
+                max={TYPE_META[t].max}
+                step={TYPE_META[t].step}
+                value={goals[t] || ''}
+                onChange={(e) =>
+                  setGoals({ ...goals, [t]: Number(e.target.value) })
+                }
+              />
+            </div>
+          ))}
+        </div>
+        <p className="preferences-caption">
+          These are personal targets. Adjust them to suit your routine.
+        </p>
+        <div className="preference-toggle">
+          <div>
+            <label htmlFor="show-demo">Show sample data</label>
+            <p>
+              Turn off to start with your own entries. You can switch back
+              anytime.
+            </p>
           </div>
-        ))}
-      </div>
-      <p className="preferences-caption">
-        These are personal targets. Adjust them to suit your routine.
-      </p>
-      <div className="preference-toggle">
-        <div>
-          <label htmlFor="show-demo">Show sample data</label>
+          <Switch id="show-demo" checked={demo} onCheckedChange={setDemo} />
+        </div>
+        <div className="preference-toggle">
+          <div>
+            <label htmlFor="show-motion">A little motion</label>
+            <p>Let your vitality halo move with you.</p>
+          </div>
+          <Switch
+            id="show-motion"
+            checked={motion}
+            onCheckedChange={setMotion}
+          />
+        </div>
+        <div className="local-info">
+          <span className="status-dot" />
           <p>
-            Turn off to start with your own entries. You can switch back
-            anytime.
+            Logs, goals, workouts, and connected-source history are saved
+            privately to your Ojas account.
           </p>
         </div>
-        <Switch id="show-demo" checked={demo} onCheckedChange={setDemo} />
-      </div>
-      <div className="preference-toggle">
-        <div>
-          <label htmlFor="show-motion">A little motion</label>
-          <p>Let your vitality halo move with you.</p>
-        </div>
-        <Switch id="show-motion" checked={motion} onCheckedChange={setMotion} />
-      </div>
-      <div className="local-info">
-        <span className="status-dot" />
-        <p>
-          Manual entries and goals stay in this browser. Connected-source
-          history is saved privately to your Ojas account.
-        </p>
-      </div>
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-      <button className="primary-button full-width" type="submit">
-        <Check size={16} />
-        Save preferences
-      </button>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <button className="primary-button full-width" type="submit">
+          <Check size={16} />
+          {busy ? 'Saving…' : 'Save preferences'}
+        </button>
+      </fieldset>
     </form>
   );
 }
@@ -322,7 +355,7 @@ export function BreathingMoment({
       <div className="breathing-visual">
         <VitalityHalo breathing={running} paused={!motion || !running} />
         <div className="breathing-center">
-          <span>
+          <span aria-live="polite" aria-atomic="true">
             {done
               ? 'A little lighter'
               : running

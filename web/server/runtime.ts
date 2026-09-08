@@ -12,7 +12,7 @@ export function database() {
   const db = bindings().DB;
   if (!db)
     throw new ApiError(
-      'Connections are not available yet. Your manual log still works.',
+      'Your account data is temporarily unavailable. Please try again.',
       503,
     );
   return db;
@@ -29,7 +29,10 @@ export function siteOrigin() {
 export function authenticatedUser(request: Request) {
   const user = request.headers.get('oai-authenticated-user-id');
   if (!user || user.length > 200)
-    throw new ApiError('Sign in to Ojas to manage your connections.', 401);
+    throw new ApiError('Sign in to Ojas to continue.', 401);
+  const expected = request.headers.get('x-ojas-account');
+  if (expected && expected !== user)
+    throw new ApiError('Your account changed. Reload Ojas to continue.', 409);
   return user;
 }
 export function requireSameOrigin(request: Request) {
@@ -83,7 +86,7 @@ export function fail(error: unknown) {
       error:
         error instanceof ApiError
           ? error.message
-          : 'The connection request could not be completed. Please try again.',
+          : 'The request could not be completed. Please try again.',
     },
     error instanceof ApiError ? error.status : 500,
   );

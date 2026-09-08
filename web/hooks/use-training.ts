@@ -7,12 +7,20 @@ import {
   type Workout,
   type PlanPreferences,
 } from '@/lib/training';
-async function request<T>(day: string, body?: unknown): Promise<T> {
+async function request<T>(
+  day: string,
+  body?: unknown,
+  accountId?: string,
+): Promise<T> {
   const response = await fetch(`/api/training?day=${encodeURIComponent(day)}`, {
+    signal: AbortSignal.timeout(20000),
     method: body ? 'POST' : 'GET',
     cache: 'no-store',
     credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: {
+      ...(accountId ? { 'X-Ojas-Account': accountId } : {}),
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = (await response.json()) as T & { error?: string };
@@ -23,7 +31,7 @@ async function request<T>(day: string, body?: unknown): Promise<T> {
     );
   return data;
 }
-export function useTraining(day: string) {
+export function useTraining(day: string, accountId?: string) {
   const [data, setData] = useState<TrainingData>({
     preferences: DEFAULT_PLAN,
     sessions: [],
@@ -35,7 +43,7 @@ export function useTraining(day: string) {
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const next = await request<TrainingData>(day);
+      const next = await request<TrainingData>(day, undefined, accountId);
       if (generation.current === current) {
         setData(next);
         setError('');
@@ -48,7 +56,7 @@ export function useTraining(day: string) {
     } finally {
       if (generation.current === current) setLoading(false);
     }
-  }, [day]);
+  }, [day, accountId]);
   const invalidate = useCallback(() => {
     generation.current++;
   }, []);
@@ -60,10 +68,14 @@ export function useTraining(day: string) {
   /* oxlint-enable react/react-compiler */
   const save = useCallback(
     async (workout: Workout) => {
-      const result = await request<{ workout: Workout }>(day, {
-        action: 'workout',
-        workout,
-      });
+      const result = await request<{ workout: Workout }>(
+        day,
+        {
+          action: 'workout',
+          workout,
+        },
+        accountId,
+      );
       ++generation.current;
       setData((d) => ({
         ...d,
@@ -72,29 +84,39 @@ export function useTraining(day: string) {
           ...d.sessions.filter((s) => s.id !== workout.id),
         ],
       }));
+      if (loading) void refresh().catch(() => undefined);
       return result.workout;
     },
-    [day],
+    [day, accountId, loading, refresh],
   );
   const savePreferences = useCallback(
     async (preferences: PlanPreferences) => {
-      const result = await request<{ preferences: PlanPreferences }>(day, {
-        action: 'plan',
-        preferences,
-      });
+      const result = await request<{ preferences: PlanPreferences }>(
+        day,
+        {
+          action: 'plan',
+          preferences,
+        },
+        accountId,
+      );
       ++generation.current;
       setData((d) => ({ ...d, preferences: result.preferences }));
     },
-    [day],
+    [day, accountId],
   );
-  const removeSourceHistory = useCallback((source: string) => {
-    ++generation.current;
-    setData((d) => ({
-      ...d,
-      imported: d.imported.filter((w) => w.source !== source),
-    }));
-  }, []);
+  const removeSourceHistory = useCallback(
+    (source: string) => {
+      ++generation.current;
+      setData((d) => ({
+        ...d,
+        imported: d.imported.filter((w) => w.source !== source),
+      }));
+      void refresh().catch(() => undefined);
+    },
+    [refresh],
+  );
   return {
+    accountId,
     data,
     error,
     loading,

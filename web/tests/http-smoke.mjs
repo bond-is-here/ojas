@@ -1,11 +1,15 @@
 // Exercises only the local Worker with isolated synthetic users. No provider API calls.
 import assert from 'node:assert/strict';
 const base = process.env.OJAS_TEST_URL || 'http://localhost:3001';
-assert.equal(new URL(base).hostname, 'localhost', 'Smoke tests must only run against a local isolated Worker.');
+assert.equal(
+  new URL(base).hostname,
+  'localhost',
+  'Smoke tests must only run against a local isolated Worker.',
+);
 const userA = `ojas-test-a-${crypto.randomUUID()}`,
   userB = `ojas-test-b-${crypto.randomUUID()}`;
 async function call(path, { user = userA, body, origin = base } = {}) {
-  return fetch(base + '/api/connections' + path, {
+  const response = await fetch(base + '/api/connections' + path, {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
       ...(user ? { 'oai-authenticated-user-id': user } : {}),
@@ -16,6 +20,16 @@ async function call(path, { user = userA, body, origin = base } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: 'manual',
   });
+  if (response.status >= 500) {
+    const detail = await response
+      .clone()
+      .text()
+      .catch(() => '<response body unavailable>');
+    console.error(
+      `[HTTP smoke] ${body === undefined ? 'GET' : 'POST'} /api/connections${path} returned ${response.status} (${response.headers.get('content-type') || 'unknown content type'}): ${detail.slice(0, 4000)}`,
+    );
+  }
+  return response;
 }
 try {
   assert.equal((await call('', { user: '' })).status, 401);
@@ -28,11 +42,15 @@ try {
     ).status,
     403,
   );
-  assert.equal(
-    (await call('/apple-health/import', { body: { entries: [] } })).status,
-    400,
-  );
+  const invalidImport = await call('/apple-health/import', {
+    body: { entries: [] },
+  });
+  assert.equal(invalidImport.status, 400, await invalidImport.text());
   const day = new Date().toISOString().slice(0, 10);
+  const exportedAt = new Date().toISOString();
+  const fromDay = new Date(Date.parse(`${day}T12:00:00Z`) - 29 * 86400000)
+    .toISOString()
+    .slice(0, 10);
   const record = {
     recordId: `activity:${day}`,
     day,
@@ -45,7 +63,14 @@ try {
     assert.equal(
       (
         await call('/apple-health/import', {
-          body: { source: 'Test watch', entries: [record] },
+          body: {
+            source: 'Test watch',
+            entries: [record],
+            fromDay,
+            throughDay: day,
+            exportedAt,
+            metrics: ['activity'],
+          },
         })
       ).status,
       200,
@@ -90,7 +115,11 @@ try {
     ready.connections.find((c) => c.provider === 'whoop').status,
     'configured',
   );
-  const authorize = await call('/whoop/authorize');
+  assert.equal(
+    (await call('/whoop/authorize?account=another-account')).status,
+    409,
+  );
+  const authorize = await call(`/whoop/authorize?account=${userA}`);
   assert.equal(authorize.status, 302);
   const url = new URL(authorize.headers.get('location'));
   assert.equal(url.origin, 'https://api.prod.whoop.com');

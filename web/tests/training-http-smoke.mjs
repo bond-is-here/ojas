@@ -7,7 +7,7 @@ const userA = `training-a-${crypto.randomUUID()}`,
   userC = `training-c-${crypto.randomUUID()}`;
 const day = new Date().toISOString().slice(0, 10);
 async function call(body, user = userA, origin = base) {
-  return fetch(`${base}/api/training?day=${day}`, {
+  const response = await fetch(`${base}/api/training?day=${day}`, {
     method: body ? 'POST' : 'GET',
     headers: {
       ...(user ? { 'oai-authenticated-user-id': user } : {}),
@@ -15,6 +15,16 @@ async function call(body, user = userA, origin = base) {
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (response.status >= 500) {
+    const detail = await response
+      .clone()
+      .text()
+      .catch(() => '<response body unavailable>');
+    console.error(
+      `[HTTP smoke] ${body ? 'POST' : 'GET'} /api/training returned ${response.status} (${response.headers.get('content-type') || 'unknown content type'}): ${detail.slice(0, 4000)}`,
+    );
+  }
+  return response;
 }
 function workout() {
   return {
@@ -134,6 +144,16 @@ assert.equal(response.status, 200);
 const done = (await response.json()).workout;
 assert.equal(done.status, 'completed');
 assert.equal(done.exercises[0].sets[0].done, true);
+assert.equal(
+  (
+    await call({
+      action: 'workout',
+      workout: { ...done, status: 'active', finishedAt: null },
+    })
+  ).status,
+  409,
+  'A completed session cannot be reactivated through a stale editor',
+);
 const concurrent = await Promise.all([
   call({ action: 'workout', workout: workout() }, userC),
   call({ action: 'workout', workout: workout() }, userC),

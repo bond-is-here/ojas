@@ -1,5 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, type SubmitEvent } from 'react';
+// oxlint-disable-next-line import/default -- Vite's worker transform supplies this constructor export.
+import AppleHealthWorker from '../workers/apple-health.worker.ts?worker';
 import {
   Activity,
   ArrowRight,
@@ -50,10 +52,11 @@ import {
   type SourceChoice,
   type ConnectionStatus,
 } from '@/lib/connections';
-import { TYPES, TYPE_META, dateKey } from '@/lib/health';
-import type { AppleSource } from '@/lib/apple-health';
+import { TYPES, TYPE_META, dateKey, formatAmount } from '@/lib/health';
+import type { AppleExport } from '@/lib/apple-health';
+import { selectAppleImport, type AppleSelection } from '@/lib/apple-import';
 import {
-  connectionRequest,
+  type ConnectionRequest,
   type ConnectionsController,
 } from '@/hooks/use-connections';
 const DETAILS = {
@@ -108,7 +111,15 @@ export default function ConnectionsPanel({
   onImported: () => void;
   onHistoryRemoved: (provider: SourceId) => void;
 }) {
-  const { data, loading, error, busy, refresh, sync } = controller;
+  const {
+    data,
+    loading,
+    error,
+    busy,
+    refresh,
+    sync,
+    request: connectionRequest,
+  } = controller;
   const [selected, setSelected] = useState<SourceId | null>(null);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -321,6 +332,7 @@ export default function ConnectionsPanel({
           )}
           {selected === 'apple-health' ? (
             <AppleImport
+              request={connectionRequest}
               onImported={async () => {
                 await refresh();
                 onImported();
@@ -363,7 +375,7 @@ export default function ConnectionsPanel({
                   'Reconnect to allow workout sync' && (
                   <a
                     className="secondary-button full-width"
-                    href={`/api/connections/${selected}/authorize`}
+                    href={`/api/connections/${selected}/authorize?account=${encodeURIComponent(controller.accountId || '')}`}
                   >
                     <Link2 size={15} />
                     Authorize workouts
@@ -398,6 +410,8 @@ export default function ConnectionsPanel({
               </div>
             ) : (
               <OAuthSetup
+                accountId={controller.accountId || ''}
+                request={connectionRequest}
                 key={selected}
                 provider={selected}
                 callbackUrl={current?.callbackUrl || ''}
@@ -468,11 +482,15 @@ export default function ConnectionsPanel({
   );
 }
 function OAuthSetup({
+  accountId,
+  request: connectionRequest,
   provider,
   callbackUrl,
   configured,
   onSaved,
 }: {
+  accountId: string;
+  request: ConnectionRequest;
   provider: 'whoop' | 'oura';
   callbackUrl: string;
   configured: boolean;
@@ -520,7 +538,7 @@ function OAuthSetup({
       </p>
       <a
         className="primary-button full-width"
-        href={`/api/connections/${provider}/authorize`}
+        href={`/api/connections/${provider}/authorize?account=${encodeURIComponent(accountId)}`}
       >
         Continue to {SOURCE_NAMES[provider]}
         <ArrowRight size={16} />
@@ -617,27 +635,29 @@ function OAuthSetup({
   );
 }
 function AppleImport({
+  request: connectionRequest,
   onImported,
   hasHistory,
   onRemove,
 }: {
+  request: ConnectionRequest;
   onImported: () => Promise<void>;
   hasHistory: boolean;
   onRemove: () => void;
 }) {
-  const [sources, setSources] = useState<AppleSource[]>([]);
-  const [source, setSource] = useState('');
+  const [data, setData] = useState<AppleExport | null>(null);
+  const [selection, setSelection] = useState<AppleSelection>({});
   const [progress, setProgress] = useState(0);
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const worker = useRef<Worker | null>(null);
-  const selected = sources.find((s) => s.name === source);
+  const selected = data ? selectAppleImport(data, selection) : null;
   useEffect(() => () => worker.current?.terminate(), []);
   const read = (file: File | undefined) => {
     if (!file) return;
     setError('');
-    setSources([]);
+    setData(null);
     if (!file.name.toLowerCase().endsWith('.xml')) {
       setError('Unzip your Apple Health export, then choose export.xml.');
       return;
@@ -650,23 +670,31 @@ function AppleImport({
     setProgress(0);
     worker.current?.terminate();
     try {
-      worker.current = new Worker(
-        new URL('../workers/apple-health.worker.ts', import.meta.url),
-        { type: 'module' },
-      );
+      worker.current = new AppleHealthWorker();
       worker.current.onmessage = (
         event: MessageEvent<{
           kind: string;
           percent?: number;
-          sources?: AppleSource[];
+          data?: AppleExport;
           message?: string;
         }>,
       ) => {
         const message = event.data;
         if (message.kind === 'progress') setProgress(message.percent || 0);
         if (message.kind === 'complete') {
-          setSources(message.sources || []);
-          setSource(message.sources?.[0]?.name || '');
+          setData(message.data || null);
+          setSelection(
+            Object.fromEntries(
+              TYPES.map((type) => [
+                type,
+                message.data?.sources.find((source) =>
+                  source.entries.some((entry) => entry.type === type),
+                )?.name
+                  ? `device:${message.data.sources.find((source) => source.entries.some((entry) => entry.type === type))!.name}`
+                  : 'skip',
+              ]),
+            ),
+          );
           setReading(false);
           worker.current?.terminate();
         }
@@ -696,10 +724,7 @@ function AppleImport({
     setSaving(true);
     setError('');
     try {
-      await connectionRequest('/apple-health/import', {
-        source: selected.name,
-        entries: selected.entries,
-      });
+      await connectionRequest('/apple-health/import', selected);
       await onImported();
     } catch (e) {
       setError(
@@ -737,54 +762,111 @@ function AppleImport({
           type="file"
           accept=".xml,text/xml,application/xml"
           disabled={reading || saving}
-          onChange={(e) => read(e.target.files?.[0])}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            read(file);
+          }}
         />
       </label>
       {reading && (
-        <Progress
-          value={progress}
-          aria-label="Apple Health file processing progress"
-        />
-      )}
-      {sources.length > 0 && (
-        <div className="import-preview">
-          <label htmlFor="apple-source">Choose one device or app</label>
-          <Select
-            value={source}
-            onValueChange={(value) => setSource(value || '')}
+        <>
+          <Progress
+            value={progress}
+            aria-label="Apple Health file processing progress"
+          />
+          <button
+            className="text-link"
+            onClick={() => {
+              worker.current?.terminate();
+              setReading(false);
+            }}
           >
-            <SelectTrigger id="apple-source">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {sources.map((s) => (
-                <SelectItem key={s.name} value={s.name}>
-                  {s.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            Cancel reading
+          </button>
+        </>
+      )}
+      {data && (
+        <div className="import-preview">
           <p>
-            Choose your preferred device to avoid overlapping phone and watch
-            data.
+            Choose one source for each metric. {data.fromDay}–{data.throughDay}.
           </p>
+          {TYPES.map((type) => (
+            <div className="field" key={type}>
+              <label htmlFor={`apple-${type}`}>{TYPE_META[type].label}</label>
+              <Select
+                disabled={saving}
+                value={selection[type] || 'skip'}
+                onValueChange={(value) =>
+                  setSelection((current) => ({
+                    ...current,
+                    [type]: value || 'skip',
+                  }))
+                }
+              >
+                <SelectTrigger id={`apple-${type}`}>
+                  <SelectValue>
+                    {selection[type] === 'clear'
+                      ? 'No records — clear these days'
+                      : selection[type]?.startsWith('device:')
+                        ? selection[type]!.slice(7)
+                        : 'Keep saved history'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="skip">Keep saved history</SelectItem>
+                  {data.sources
+                    .filter((source) =>
+                      source.entries.some((entry) => entry.type === type),
+                    )
+                    .map((source) => (
+                      <SelectItem
+                        key={source.name}
+                        value={`device:${source.name}`}
+                      >
+                        {source.name}
+                      </SelectItem>
+                    ))}
+                  <SelectItem value="clear">
+                    No records — clear these days
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ))}
           {selected && (
             <div className="import-counts">
-              {TYPES.filter((t) =>
-                selected.entries.some((e) => e.type === t),
-              ).map((t) => (
+              {selected.metrics.map((t) => (
                 <span key={t}>
                   {TYPE_META[t].label}
                   <strong>
-                    {selected.entries.filter((e) => e.type === t).length} days
+                    {selected.entries.filter((e) => e.type === t).length}{' '}
+                    {selected.entries.filter((e) => e.type === t).length === 1
+                      ? 'day'
+                      : 'days'}
                   </strong>
                 </span>
               ))}
             </div>
           )}
+          {!!selected?.entries.length && (
+            <details className="import-daily-review">
+              <summary>Review daily totals</summary>
+              <div>
+                {selected.entries.map((entry) => (
+                  <p key={entry.recordId}>
+                    <span>
+                      {entry.day} · {TYPE_META[entry.type].label}
+                    </span>
+                    <strong>{formatAmount(entry.type, entry.amount)}</strong>
+                  </p>
+                ))}
+              </div>
+            </details>
+          )}
           <button
             className="primary-button full-width"
-            disabled={!selected || saving}
+            disabled={!selected?.metrics.length || saving}
             onClick={() => {
               void save();
             }}
@@ -794,11 +876,12 @@ function AppleImport({
             ) : (
               <Check size={16} />
             )}
-            Import {selected?.entries.length || 0} daily records
+            Save {selected?.entries.length || 0} daily records
           </button>
           <span className="field-help">
             Only the previewed daily totals are uploaded to your private
-            account. Matching days are updated, not duplicated.
+            account. Selected metrics replace their saved Apple totals in this
+            date range, including days with no records. Other history is kept.
           </span>
         </div>
       )}

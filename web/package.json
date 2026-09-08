@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "dev": "vinext dev",
@@ -13,6 +13,7 @@
     "format": "oxfmt",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
+    "test:http": "node tests/run-http-smoke.mjs",
     "db:generate": "drizzle-kit generate",
     "db:local": "wrangler d1 migrations apply DB --local --config wrangler.local.jsonc"
   },

@@ -22,6 +22,10 @@ import {
   WorkoutSaveError,
 } from '../lib/workout-save-queue.ts';
 import { createWorkspaceStore } from '../lib/local-workspace.ts';
+import {
+  parseRecovery,
+  type WorkoutRecovery,
+} from '../lib/workout-recovery.ts';
 
 const workout = () =>
   startWorkout(
@@ -116,6 +120,73 @@ await test('a corrected workout replaces a definitively rejected save without ad
     );
     assert.equal(queue.hasPending, false);
   }
+});
+await test('workout recovery retains the exact in-flight request and newer edits across reload', async () => {
+  const initial = { ...workout(), version: 1 };
+  const queue = new WorkoutSaveQueue(initial.version);
+  let journal = queue.snapshot();
+  queue.onChange = (state) => {
+    journal = state;
+  };
+  let release!: () => void;
+  let server = initial;
+  queue.enqueue({ ...initial, note: 'First' });
+  const saving = queue.flush(async (attempt) => {
+    assert.deepEqual(
+      journal.retry,
+      attempt,
+      'attempt must already be durable before network submission',
+    );
+    server = { ...attempt, version: 2 };
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    throw new Error('response lost');
+  });
+  queue.enqueue({ ...initial, note: 'Newer' });
+  const raw = JSON.stringify({
+    schema: 1,
+    accountId: 'alice',
+    latest: { ...initial, note: 'Newer' },
+    queue: journal,
+    duration: { value: '20', original: '1' },
+    updatedAt: new Date().toISOString(),
+  } satisfies WorkoutRecovery);
+  const recovered = parseRecovery(raw, 'alice');
+  assert.throws(() => parseRecovery(raw, 'bob'));
+  release();
+  await assert.rejects(saving);
+  const resumed = new WorkoutSaveQueue(initial.version, recovered.queue);
+  const attempts: Workout[] = [];
+  await resumed.flush(async (attempt) => {
+    attempts.push(attempt);
+    if (attempt.version === server.version)
+      server = { ...attempt, version: attempt.version + 1 };
+    else assert.deepEqual({ ...attempt, version: attempt.version + 1 }, server);
+    return server;
+  });
+  assert.deepEqual(
+    attempts.map((a) => [a.note, a.version]),
+    [
+      ['First', 1],
+      ['Newer', 2],
+    ],
+  );
+  assert.equal(server.note, 'Newer');
+  assert.equal(resumed.hasPending, false);
+});
+await test('a recovered conflict retains its draft and exact attempted version', async () => {
+  const queue = new WorkoutSaveQueue(3);
+  queue.enqueue({ ...workout(), version: 3, note: 'Keep this' });
+  const recovered = new WorkoutSaveQueue(3, queue.snapshot());
+  await assert.rejects(
+    recovered.flush(async () => {
+      throw new WorkoutSaveError('Changed elsewhere', 409);
+    }),
+  );
+  assert.equal(recovered.snapshot().retry?.version, 3);
+  assert.equal(recovered.snapshot().retry?.note, 'Keep this');
+  assert.equal(recovered.hasPending, true);
 });
 await test('quick capture handles attached units and rejects partly parsed quantities', () => {
   for (const [input, amount] of [

@@ -12,6 +12,11 @@ export async function GET(
 ) {
   try {
     const user = authenticatedUser(request);
+    if (new URL(request.url).searchParams.get('account') !== user)
+      throw new ApiError(
+        'Your account changed. Reload Ojas before connecting a wearable.',
+        409,
+      );
     const { provider } = await params;
     if (!isOAuthProvider(provider)) throw new ApiError('Unknown source.', 404);
     if (request.headers.get('sec-fetch-site') === 'cross-site')

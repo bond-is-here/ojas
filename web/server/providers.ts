@@ -52,8 +52,10 @@ export async function exchangeTokens(
     throw new ApiError(
       response.status === 429
         ? 'This source is busy. Try again in a few minutes.'
-        : 'Authorization could not be completed. Check your app credentials and reconnect.',
-      response.status === 429 ? 429 : 409,
+        : response.status >= 500
+          ? 'This source is temporarily unavailable. Try syncing again later.'
+          : 'Authorization could not be completed. Check your app credentials and reconnect.',
+      response.status === 429 ? 429 : response.status >= 500 ? 502 : 409,
     );
   const token = object(await response.json());
   if (typeof token.access_token !== 'string' || !token.access_token)

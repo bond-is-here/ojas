@@ -28,7 +28,7 @@ export const DEFAULT_WORKSPACE: Workspace = {
   version: 1,
   entries: [],
   goals: DEFAULT_GOALS,
-  demo: true,
+  demo: false,
   motion: true,
 };
 export const TYPE_META = {
