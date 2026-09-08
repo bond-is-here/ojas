@@ -139,7 +139,7 @@ export default function ConnectionsPanel({
         setActionError(
           outcome === 'cancelled'
             ? 'Authorization was cancelled. You can connect whenever you are ready.'
-            : 'Authorization could not finish. Check your app settings and try connecting again.',
+            : 'Authorization could not finish. Try connecting again.',
         );
       url.searchParams.delete('connection');
       history.replaceState(null, '', url.pathname + url.search);
@@ -231,6 +231,10 @@ export default function ConnectionsPanel({
           const state = data.connections.find((c) => c.provider === provider);
           const status = state?.status || 'not_connected';
           const connected = status === 'connected' || status === 'imported';
+          const canAuthorize =
+            provider !== 'apple-health' &&
+            !connected &&
+            (state?.configured || state?.managedAvailable);
           return (
             <article className={`source-card ${detail.accent}`} key={provider}>
               <div className="source-card-top">
@@ -269,22 +273,42 @@ export default function ConnectionsPanel({
                       )}
                     </button>
                   )}
-                  <button
-                    className={
-                      connected ? 'secondary-button' : 'primary-button'
-                    }
-                    disabled={loading || !!error}
-                    onClick={() => open(provider)}
-                  >
-                    {provider === 'apple-health'
-                      ? connected
-                        ? 'Import again'
-                        : 'Import data'
-                      : connected
-                        ? 'Manage'
-                        : 'Connect'}
-                    <ArrowUpRight size={15} />
-                  </button>
+                  {canAuthorize && !loading && !error && !busy && !saving ? (
+                    <>
+                      <button
+                        className="source-sync"
+                        aria-label={`${detail.name} connection options`}
+                        onClick={() => open(provider)}
+                      >
+                        <Settings2 size={16} />
+                      </button>
+                      <a
+                        className="primary-button"
+                        target="_top"
+                        href={`/api/connections/${provider}/authorize?account=${encodeURIComponent(controller.accountId || '')}`}
+                      >
+                        {status === 'reconnect' ? 'Reconnect' : 'Connect'}
+                        <ArrowUpRight size={15} />
+                      </a>
+                    </>
+                  ) : (
+                    <button
+                      className={
+                        connected ? 'secondary-button' : 'primary-button'
+                      }
+                      disabled={loading || !!error || !!busy || saving}
+                      onClick={() => open(provider)}
+                    >
+                      {provider === 'apple-health'
+                        ? connected
+                          ? 'Import again'
+                          : 'Import data'
+                        : connected
+                          ? 'Manage'
+                          : 'Connect'}
+                      <ArrowUpRight size={15} />
+                    </button>
+                  )}
                 </div>
               </div>
               {state?.lastError && (
@@ -375,6 +399,7 @@ export default function ConnectionsPanel({
                   'Reconnect to allow workout sync' && (
                   <a
                     className="secondary-button full-width"
+                    target="_top"
                     href={`/api/connections/${selected}/authorize?account=${encodeURIComponent(controller.accountId || '')}`}
                   >
                     <Link2 size={15} />
@@ -404,7 +429,7 @@ export default function ConnectionsPanel({
                     Remove history
                   </button>
                   <button onClick={() => setConfiguring(true)}>
-                    App settings
+                    Advanced setup
                   </button>
                 </div>
               </div>
@@ -412,11 +437,18 @@ export default function ConnectionsPanel({
               <OAuthSetup
                 accountId={controller.accountId || ''}
                 request={connectionRequest}
-                key={selected}
+                key={`${selected}:${configuring ? 'settings' : 'connect'}`}
                 provider={selected}
                 callbackUrl={current?.callbackUrl || ''}
                 configured={!!current?.configured && !configuring}
-                onSaved={refresh}
+                managedAvailable={!!current?.managedAvailable}
+                credentialSource={current?.credentialSource || null}
+                forceSetup={configuring}
+                onBusy={setSaving}
+                onSaved={async () => {
+                  await refresh();
+                  setConfiguring(false);
+                }}
               />
             )
           ) : null}
@@ -487,6 +519,10 @@ function OAuthSetup({
   provider,
   callbackUrl,
   configured,
+  managedAvailable,
+  credentialSource,
+  forceSetup,
+  onBusy,
   onSaved,
 }: {
   accountId: string;
@@ -494,17 +530,23 @@ function OAuthSetup({
   provider: 'whoop' | 'oura';
   callbackUrl: string;
   configured: boolean;
+  managedAvailable: boolean;
+  credentialSource: 'personal' | 'managed' | null;
+  forceSetup: boolean;
+  onBusy: (busy: boolean) => void;
   onSaved: () => Promise<unknown>;
 }) {
   const [clientId, setClientId] = useState('');
   const [secret, setSecret] = useState('');
   const [ready, setReady] = useState(configured);
+  const [editing, setEditing] = useState(forceSetup);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const save = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBusy(true);
+    onBusy(true);
     setError('');
     try {
       await connectionRequest(`/${provider}/setup`, {
@@ -514,37 +556,46 @@ function OAuthSetup({
       setSecret('');
       await onSaved();
       setReady(true);
+      setEditing(false);
     } catch (e) {
       setError(
         e instanceof Error ? e.message : 'Could not save your app settings.',
       );
     } finally {
       setBusy(false);
+      onBusy(false);
     }
   };
-  return ready ? (
+  return !editing ? (
     <div className="oauth-ready">
       <span className="ready-symbol">
         <Link2 size={28} />
       </span>
-      <h3>Ready when you are.</h3>
-      <p>
-        You’ll continue to {SOURCE_NAMES[provider]} to choose whether Ojas can
-        read your{' '}
-        {provider === 'whoop'
-          ? 'sleep and recovery'
-          : 'activity, sleep, and readiness'}
-        .
-      </p>
-      <a
-        className="primary-button full-width"
-        href={`/api/connections/${provider}/authorize?account=${encodeURIComponent(accountId)}`}
-      >
-        Continue to {SOURCE_NAMES[provider]}
-        <ArrowRight size={16} />
-      </a>
-      <button className="text-link" onClick={() => setReady(false)}>
-        Edit app settings
+      {ready || managedAvailable ? (
+        <>
+          <p>
+            Choose what to share with Ojas in your {SOURCE_NAMES[provider]}{' '}
+            account.
+          </p>
+          <a
+            className="primary-button full-width"
+            target="_top"
+            href={`/api/connections/${provider}/authorize?account=${encodeURIComponent(accountId)}`}
+          >
+            Continue to {SOURCE_NAMES[provider]}
+            <ArrowRight size={16} />
+          </a>
+        </>
+      ) : (
+        <p>
+          This connection isn’t available yet. You can keep logging in Ojas or
+          connect with your own developer app.
+        </p>
+      )}
+      <button className="text-link" onClick={() => setEditing(true)}>
+        {credentialSource === 'personal'
+          ? 'Edit app settings'
+          : 'Use your own app'}
       </button>
     </div>
   ) : (
@@ -556,8 +607,8 @@ function OAuthSetup({
     >
       <div className="setup-intro">
         <p>
-          A developer app is needed for this personal connection. Create one
-          with {SOURCE_NAMES[provider]}, then add its credentials here.
+          Use a developer app from {SOURCE_NAMES[provider]} for your personal
+          connection.
         </p>
         <a
           href={DETAILS[provider].guide}
@@ -599,6 +650,7 @@ function OAuthSetup({
           required
           maxLength={300}
           autoComplete="off"
+          disabled={busy}
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
         />
@@ -611,6 +663,7 @@ function OAuthSetup({
           type="password"
           maxLength={5000}
           autoComplete="new-password"
+          disabled={busy}
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
         />

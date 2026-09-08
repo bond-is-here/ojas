@@ -1,7 +1,9 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { requestJSON } from '@/lib/client-request';
 import {
   DEFAULT_SOURCE_PREFERENCES,
+  validConnectionsData,
   type ConnectionsData,
   type SourceId,
 } from '@/lib/connections';
@@ -10,28 +12,23 @@ export async function connectionRequest<T = Record<string, unknown>>(
   body?: unknown,
   accountId?: string,
 ): Promise<T> {
-  const response = await fetch(`/api/connections${path}`, {
-    signal: AbortSignal.timeout(path.endsWith('/sync') ? 130000 : 20000),
-    method: body === undefined ? 'GET' : 'POST',
-    credentials: 'same-origin',
-    headers: {
-      ...(accountId ? { 'X-Ojas-Account': accountId } : {}),
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+  return requestJSON<T>(
+    `/api/connections${path}`,
+    {
+      method: body === undefined ? 'GET' : 'POST',
+      credentials: 'same-origin',
+      headers: {
+        ...(accountId ? { 'X-Ojas-Account': accountId } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: 'no-store',
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    cache: 'no-store',
-  });
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error('Sign in to Ojas to access your connections.');
-  }
-  if (!response.ok) {
-    const error = (data as { error?: string })?.error;
-    throw new Error(error || 'This action could not be completed.');
-  }
-  return data as T;
+    path.endsWith('/sync') ? 130000 : 20000,
+    body === undefined && (!path || path.startsWith('?'))
+      ? validConnectionsData
+      : undefined,
+  );
 }
 export type ConnectionRequest = <T = Record<string, unknown>>(
   path: string,
@@ -147,7 +144,8 @@ export function useConnections(
             disposed ||
             syncing.current ||
             source.provider === 'apple-health' ||
-            source.status !== 'connected'
+            source.status !== 'connected' ||
+            source.nextSyncAt > Date.now()
           )
             continue;
           const recent = Math.max(

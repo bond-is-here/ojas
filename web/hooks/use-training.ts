@@ -1,35 +1,99 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WorkoutSaveError } from '@/lib/workout-save-queue';
+import { ClientRequestError, requestJSON } from '@/lib/client-request';
 import {
   DEFAULT_PLAN,
   type TrainingData,
   type Workout,
   type PlanPreferences,
+  validatePlan,
+  validateWorkout,
 } from '@/lib/training';
+
+function sameCanonicalWorkout(submitted: unknown, saved: unknown) {
+  try {
+    const expected = validateWorkout(submitted);
+    const actual = validateWorkout(saved);
+    return (
+      actual.id === expected.id &&
+      actual.version === expected.version + 1 &&
+      JSON.stringify(actual) ===
+        JSON.stringify({ ...expected, version: expected.version + 1 })
+    );
+  } catch {
+    return false;
+  }
+}
+function sameCanonicalPlan(submitted: unknown, saved: unknown) {
+  try {
+    return (
+      JSON.stringify(validatePlan(saved)) ===
+      JSON.stringify(validatePlan(submitted))
+    );
+  } catch {
+    return false;
+  }
+}
+function isTrainingData(data: unknown) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const value = data as {
+    preferences?: unknown;
+    sessions?: unknown;
+    imported?: unknown;
+  };
+  if (!Array.isArray(value.sessions) || !Array.isArray(value.imported))
+    return false;
+  try {
+    validatePlan(value.preferences);
+    value.sessions.forEach(validateWorkout);
+    return value.imported.every((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item))
+        return false;
+      const workout = item as Record<string, unknown>;
+      return (
+        typeof workout.id === 'string' &&
+        (workout.source === 'whoop' || workout.source === 'oura') &&
+        typeof workout.title === 'string' &&
+        typeof workout.day === 'string' &&
+        typeof workout.startedAt === 'string' &&
+        typeof workout.endedAt === 'string' &&
+        typeof workout.durationSeconds === 'number' &&
+        Number.isFinite(workout.durationSeconds) &&
+        workout.durationSeconds >= 0
+      );
+    });
+  } catch {
+    return false;
+  }
+}
 async function request<T>(
   day: string,
   body?: unknown,
   accountId?: string,
+  validate?: (data: unknown) => boolean,
 ): Promise<T> {
-  const response = await fetch(`/api/training?day=${encodeURIComponent(day)}`, {
-    signal: AbortSignal.timeout(20000),
-    method: body ? 'POST' : 'GET',
-    cache: 'no-store',
-    credentials: 'same-origin',
-    headers: {
-      ...(accountId ? { 'X-Ojas-Account': accountId } : {}),
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = (await response.json()) as T & { error?: string };
-  if (!response.ok)
-    throw new WorkoutSaveError(
-      data.error || 'Your workout could not be saved. Try again.',
-      response.status,
+  try {
+    return await requestJSON<T>(
+      `/api/training?day=${encodeURIComponent(day)}`,
+      {
+        method: body ? 'POST' : 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: {
+          ...(accountId ? { 'X-Ojas-Account': accountId } : {}),
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      },
+      20000,
+      validate,
     );
-  return data;
+  } catch (error) {
+    if (error instanceof ClientRequestError)
+      throw new WorkoutSaveError(error.message, error.status);
+    throw error;
+  }
 }
 export function useTraining(day: string, accountId?: string) {
   const [data, setData] = useState<TrainingData>({
@@ -43,7 +107,12 @@ export function useTraining(day: string, accountId?: string) {
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const next = await request<TrainingData>(day, undefined, accountId);
+      const next = await request<TrainingData>(
+        day,
+        undefined,
+        accountId,
+        isTrainingData,
+      );
       if (generation.current === current) {
         setData(next);
         setError('');
@@ -75,6 +144,14 @@ export function useTraining(day: string, accountId?: string) {
           workout,
         },
         accountId,
+        (data) =>
+          !!data &&
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          sameCanonicalWorkout(
+            workout,
+            (data as { workout?: unknown }).workout,
+          ),
       );
       ++generation.current;
       setData((d) => ({
@@ -98,6 +175,14 @@ export function useTraining(day: string, accountId?: string) {
           preferences,
         },
         accountId,
+        (data) =>
+          !!data &&
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          sameCanonicalPlan(
+            preferences,
+            (data as { preferences?: unknown }).preferences,
+          ),
       );
       ++generation.current;
       setData((d) => ({ ...d, preferences: result.preferences }));

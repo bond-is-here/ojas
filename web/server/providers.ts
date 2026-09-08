@@ -9,6 +9,19 @@ import {
 import { ApiError } from './errors.ts';
 import { mapWorkouts } from '../lib/source-workouts.ts';
 import type { SourceWorkout } from '../lib/training.ts';
+
+export type ProviderRequester = (
+  provider: OAuthProvider,
+  clientId: string,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+const directRequester: ProviderRequester = (
+  _provider,
+  _clientId,
+  input,
+  init,
+) => fetch(input, init);
 export const PROVIDERS = {
   whoop: {
     authorize: 'https://api.prod.whoop.com/oauth/oauth2/auth',
@@ -33,21 +46,27 @@ export async function exchangeTokens(
   credentials: { clientId: string; secret: string },
   grant: Record<string, string>,
   previousRefresh?: string | null,
+  requester: ProviderRequester = directRequester,
 ): Promise<Tokens> {
-  const response = await fetch(PROVIDERS[provider].token, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
+  const response = await requester(
+    provider,
+    credentials.clientId,
+    PROVIDERS[provider].token,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: new URLSearchParams({
+        ...grant,
+        client_id: credentials.clientId,
+        client_secret: credentials.secret,
+      }),
+      signal: AbortSignal.timeout(15000),
+      redirect: 'error',
     },
-    body: new URLSearchParams({
-      ...grant,
-      client_id: credentials.clientId,
-      client_secret: credentials.secret,
-    }),
-    signal: AbortSignal.timeout(15000),
-    redirect: 'error',
-  });
+  );
   if (!response.ok)
     throw new ApiError(
       response.status === 429
@@ -76,9 +95,12 @@ async function collection(
   accessToken: string,
   params: Record<string, string>,
   signal: AbortSignal,
+  clientId: string,
+  requester: ProviderRequester,
 ): Promise<unknown[]> {
   const all: unknown[] = [];
   let next: string | undefined;
+  const seen = new Set<string>();
   for (let page = 0; page < 8; page++) {
     const url = new URL(path, PROVIDERS[provider].api);
     for (const [key, value] of Object.entries(params))
@@ -89,7 +111,7 @@ async function collection(
       url.searchParams.delete('nextToken');
       url.searchParams.set('next_token', next);
     }
-    const response = await fetch(url, {
+    const response = await requester(provider, clientId, url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
@@ -123,27 +145,49 @@ async function collection(
     if (!Array.isArray(records))
       throw new ApiError('The source returned an unexpected response.', 502);
     all.push(...records);
+    if (
+      data.next_token !== undefined &&
+      data.next_token !== null &&
+      typeof data.next_token !== 'string'
+    )
+      throw new ApiError('The source returned an invalid page cursor.', 502);
     next =
-      typeof data.next_token === 'string' && data.next_token
-        ? data.next_token
+      typeof data.next_token === 'string'
+        ? data.next_token || undefined
         : undefined;
     if (!next) return all;
+    if (seen.has(next))
+      throw new ApiError('The source returned a repeated page cursor.', 502);
+    seen.add(next);
   }
   throw new ApiError(
     'This date range contains more records than can be synced in one request. Your previous data is unchanged.',
     422,
   );
 }
+export type ProviderRequestOptions = {
+  clientId?: string;
+  requester?: ProviderRequester;
+};
 export async function fetchSourceData(
   provider: OAuthProvider,
   accessToken: string,
+  options: ProviderRequestOptions = {},
 ): Promise<{
   entries: SyncedEntry[];
   summary: Record<string, string | number>;
   workouts: SourceWorkout[];
   window: { start: string; end: string; fromDay: string; untilDay: string };
+  entriesComplete: boolean;
   workoutsComplete: boolean;
 }> {
+  if (options.requester && !options.clientId)
+    throw new ApiError(
+      'This source is temporarily unavailable. Try again later.',
+      503,
+    );
+  const requester = options.requester || directRequester;
+  const clientId = options.clientId || '';
   const end = new Date();
   const start = new Date(end.valueOf() - 31 * 86400000);
   const signal = AbortSignal.timeout(45000);
@@ -159,9 +203,15 @@ export async function fetchSourceData(
         accessToken,
         params,
         signal,
+        clientId,
+        requester,
       );
-      workoutsComplete = true;
-      return mapWorkouts(provider, records);
+      const workouts = mapWorkouts(provider, records);
+      workoutsComplete = workouts.length === records.length;
+      if (!workoutsComplete)
+        summary.Workouts =
+          'Some workouts could not be read; previous workouts were kept';
+      return workouts;
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) throw error;
       summary.Workouts =
@@ -179,6 +229,8 @@ export async function fetchSourceData(
       accessToken,
       params,
       signal,
+      clientId,
+      requester,
     );
     const recovery = await collection(
       provider,
@@ -186,6 +238,8 @@ export async function fetchSourceData(
       accessToken,
       params,
       signal,
+      clientId,
+      requester,
     );
     const latest = recovery
       .map(object)
@@ -203,8 +257,20 @@ export async function fetchSourceData(
       if (value !== null) summary[key] = value;
     if (latest && typeof latest.created_at === 'string')
       summary['As of'] = latest.created_at.slice(0, 10);
+    const entries = whoopSleep(sleep);
+    // Pending and unscorable sleeps intentionally have no sleep metric. Any
+    // other skipped record makes this snapshot unsafe to use for deletions.
+    const expected = sleep.filter((raw) => {
+      const state = object(raw).score_state;
+      return state !== 'PENDING_SCORE' && state !== 'UNSCORABLE';
+    });
+    const entriesComplete = entries.length === expected.length;
+    if (!entriesComplete)
+      summary['Daily data'] =
+        'Some daily records could not be read; previous records were kept';
     return {
-      entries: whoopSleep(sleep),
+      entries,
+      entriesComplete,
       workouts: await loadWorkouts(params, summary),
       workoutsComplete,
       // Sleep entries store local wake-up dates, not UTC start timestamps.
@@ -230,6 +296,8 @@ export async function fetchSourceData(
     accessToken,
     params,
     signal,
+    clientId,
+    requester,
   );
   const sleep = await collection(
     provider,
@@ -237,6 +305,8 @@ export async function fetchSourceData(
     accessToken,
     params,
     signal,
+    clientId,
+    requester,
   );
   const readiness = await collection(
     provider,
@@ -244,6 +314,8 @@ export async function fetchSourceData(
     accessToken,
     params,
     signal,
+    clientId,
+    requester,
   );
   const latest = readiness
     .map(object)
@@ -251,8 +323,14 @@ export async function fetchSourceData(
   const summary: Record<string, string | number> = {};
   if (number(latest?.score) !== null) summary.Readiness = Number(latest.score);
   if (latest && typeof latest.day === 'string') summary['As of'] = latest.day;
+  const entries = ouraEntries(activity, sleep);
+  const entriesComplete = entries.length === activity.length + sleep.length;
+  if (!entriesComplete)
+    summary['Daily data'] =
+      'Some daily records could not be read; previous records were kept';
   return {
-    entries: ouraEntries(activity, sleep),
+    entries,
+    entriesComplete,
     workouts: await loadWorkouts(params, summary),
     workoutsComplete,
     window: {

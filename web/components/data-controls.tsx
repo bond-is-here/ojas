@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Download, LoaderCircle } from 'lucide-react';
 import { STORAGE_KEY } from '@/lib/health';
 import { recoveryPrefix } from '@/lib/workout-recovery';
+import { ClientRequestError, requestExport } from '@/lib/client-request';
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -19,22 +20,13 @@ export function DataControls({ accountId }: { accountId: string }) {
     setBusy(true);
     setError('');
     try {
-      const response = await fetch('/api/export', {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: { 'X-Ojas-Account': accountId },
-      });
-      if (!response.ok) {
-        const body = (await response.json()) as { error?: string };
-        throw new Error(body.error || 'Your export could not be downloaded.');
-      }
       download(
-        await response.blob(),
+        await requestExport(accountId),
         `ojas-${new Date().toISOString().slice(0, 10)}.jsonl`,
       );
     } catch (error) {
       setError(
-        error instanceof Error
+        error instanceof ClientRequestError
           ? error.message
           : 'Your export could not be downloaded.',
       );
