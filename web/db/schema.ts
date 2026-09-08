@@ -12,6 +12,7 @@ export const connections = sqliteTable(
     userId: text('user_id').notNull(),
     provider: text('provider').notNull(),
     clientId: text('client_id'),
+    credentialSource: text('credential_source').notNull().default('personal'),
     secretCipher: text('secret_cipher'),
     tokenCipher: text('token_cipher'),
     expiresAt: integer('expires_at'),
@@ -20,6 +21,7 @@ export const connections = sqliteTable(
     lastError: text('last_error'),
     summary: text('summary'),
     syncUntil: integer('sync_until').notNull().default(0),
+    nextSyncAt: integer('next_sync_at').notNull().default(0),
     revision: text('revision').notNull(),
   },
   (t) => [primaryKey({ columns: [t.userId, t.provider] })],
@@ -30,7 +32,36 @@ export const oauthStates = sqliteTable('oauth_states', {
   provider: text('provider').notNull(),
   revision: text('revision').notNull(),
   expiresAt: integer('expires_at').notNull(),
+  clientId: text('client_id'),
+  credentialSource: text('credential_source'),
 });
+
+// Store only hashed app identity and request timing state; never user records or tokens.
+export const providerRequestBudget = sqliteTable(
+  'provider_request_budget',
+  {
+    provider: text('provider').notNull(),
+    clientIdHash: text('client_id_hash').notNull(),
+    blockedUntil: integer('blocked_until').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.provider, t.clientIdHash] })],
+);
+export const providerRequestLedger = sqliteTable(
+  'provider_request_ledger',
+  {
+    reservationId: text('reservation_id').primaryKey(),
+    provider: text('provider').notNull(),
+    clientIdHash: text('client_id_hash').notNull(),
+    reservedAt: integer('reserved_at').notNull(),
+  },
+  (t) => [
+    index('idx_provider_request_ledger_key_time').on(
+      t.provider,
+      t.clientIdHash,
+      t.reservedAt,
+    ),
+  ],
+);
 export const sourceEntries = sqliteTable(
   'source_entries',
   {

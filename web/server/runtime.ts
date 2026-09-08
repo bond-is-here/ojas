@@ -6,6 +6,10 @@ export function bindings() {
     DB?: D1Database;
     CONNECTIONS_ENCRYPTION_KEY?: string;
     SITE_ORIGIN?: string;
+    WHOOP_CLIENT_ID?: string;
+    WHOOP_CLIENT_SECRET?: string;
+    OURA_CLIENT_ID?: string;
+    OURA_CLIENT_SECRET?: string;
   };
 }
 export function database() {

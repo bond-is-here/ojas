@@ -66,6 +66,8 @@ try {
     bindings: {
       SITE_ORIGIN: origin,
       CONNECTIONS_ENCRYPTION_KEY: '1'.repeat(64),
+      OURA_CLIENT_ID: 'synthetic-managed-client',
+      OURA_CLIENT_SECRET: 'synthetic-managed-secret',
     },
     d1Databases: { DB: 'ojas-smoke' },
     d1Persist: join(directory, 'd1'),

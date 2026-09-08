@@ -32,10 +32,13 @@ export type ConnectionStatus = {
     | 'imported'
     | 'reconnect';
   lastSync: string | null;
+  nextSyncAt: number;
   lastError: string | null;
   count: number;
   summary: Record<string, string | number> | null;
   configured: boolean;
+  managedAvailable?: boolean;
+  credentialSource?: 'personal' | 'managed' | null;
   callbackUrl?: string;
 };
 export type ConnectionsData = {
@@ -45,6 +48,64 @@ export type ConnectionsData = {
 };
 export function isOAuthProvider(p: string): p is OAuthProvider {
   return p === 'whoop' || p === 'oura';
+}
+export function validConnectionsData(input: unknown): input is ConnectionsData {
+  const data = object(input);
+  return (
+    Array.isArray(data.connections) &&
+    data.connections.every((raw) => {
+      const source = object(raw);
+      return (
+        SOURCE_ORDER.includes(source.provider as SourceId) &&
+        [
+          'not_connected',
+          'configured',
+          'connected',
+          'imported',
+          'reconnect',
+        ].includes(source.status as string) &&
+        typeof source.configured === 'boolean' &&
+        typeof source.count === 'number' &&
+        Number.isSafeInteger(source.count) &&
+        source.count >= 0 &&
+        (source.lastSync === null ||
+          (typeof source.lastSync === 'string' &&
+            Number.isFinite(Date.parse(source.lastSync)))) &&
+        typeof source.nextSyncAt === 'number' &&
+        Number.isSafeInteger(source.nextSyncAt) &&
+        source.nextSyncAt >= 0 &&
+        (source.lastError === null || typeof source.lastError === 'string') &&
+        (source.summary === null ||
+          (typeof source.summary === 'object' &&
+            !Array.isArray(source.summary) &&
+            Object.values(source.summary).every(
+              (value) =>
+                typeof value === 'string' ||
+                (typeof value === 'number' && Number.isFinite(value)),
+            )))
+      );
+    }) &&
+    Array.isArray(data.entries) &&
+    data.entries.every((raw) => {
+      const entry = object(raw);
+      return (
+        typeof entry.id === 'string' &&
+        !!entry.id &&
+        typeof entry.recordId === 'string' &&
+        !!entry.recordId &&
+        SOURCE_ORDER.includes(entry.source as SourceId) &&
+        validDay(entry.day) &&
+        typeof entry.time === 'string' &&
+        /^([01]\d|2[0-3]):[0-5]\d$/.test(entry.time) &&
+        TYPES.includes(entry.type as EntryType) &&
+        typeof entry.amount === 'number' &&
+        Number.isFinite(entry.amount) &&
+        entry.amount >= 0 &&
+        typeof entry.title === 'string'
+      );
+    }) &&
+    validPreferences(data.preferences)
+  );
 }
 export function validPreferences(input: unknown): input is SourcePreferences {
   if (!input || typeof input !== 'object') return false;
@@ -167,7 +228,9 @@ export function whoopSleep(records: unknown[]): SyncedEntry[] {
     const duration =
       values.reduce<number>((sum, n) => sum + (n || 0), 0) / 3600000;
     const offset =
-      typeof r.timezone_offset === 'string' ? r.timezone_offset : '+00:00';
+      typeof r.timezone_offset === 'string' && r.timezone_offset !== 'Z'
+        ? r.timezone_offset
+        : '+00:00';
     const match = /^([+-])(\d{2}):(\d{2})$/.exec(offset);
     if (!match) return [];
     const minutes =
