@@ -1,14 +1,19 @@
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { setTimeout as delay } from 'node:timers/promises';
 
-const root = resolve(new URL('..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const directory = await mkdtemp(join(tmpdir(), 'ojas-smoke-'));
-const cli = join(root, 'node_modules/wrangler/bin/wrangler.js');
+// Use the exact Miniflare version installed with the pinned Wrangler package.
+const wranglerRequire = createRequire(
+  await realpath(join(root, 'node_modules/wrangler/package.json')),
+);
+const { Miniflare } = wranglerRequire('miniflare');
 const listener = createServer();
 listener.listen(0, '127.0.0.1');
 await once(listener, 'listening');
@@ -18,22 +23,6 @@ const origin = `http://localhost:${port}`;
 const config = JSON.parse(
   await readFile(join(root, 'dist/server/wrangler.json'), 'utf8'),
 );
-config.main = join(root, 'dist/server/index.js');
-config.assets.directory = join(root, 'dist/client');
-config.vars = {
-  SITE_ORIGIN: origin,
-  CONNECTIONS_ENCRYPTION_KEY: '1'.repeat(64),
-};
-config.d1_databases = [
-  {
-    binding: 'DB',
-    database_name: 'ojas-smoke',
-    database_id: '00000000-0000-4000-8000-000000000000',
-    migrations_dir: join(root, 'drizzle'),
-  },
-];
-const configPath = join(directory, 'wrangler.json');
-await writeFile(configPath, JSON.stringify(config));
 const env = {
   ...process.env,
   CI: 'true',
@@ -49,62 +38,64 @@ async function run(args) {
   const [code] = await once(child, 'exit');
   if (code !== 0) throw new Error(`Check failed (${code}): ${args.at(-1)}`);
 }
-let worker,
-  exited,
-  output = '';
+let worker;
 try {
-  await run([
-    cli,
-    'd1',
-    'migrations',
-    'apply',
-    'DB',
-    '--local',
-    '--config',
-    configPath,
-    '--persist-to',
-    join(directory, 'state'),
-  ]);
-  worker = spawn(
-    process.execPath,
-    [
-      cli,
-      'dev',
-      '--local',
-      '--config',
-      configPath,
-      '--port',
-      String(port),
-      '--ip',
-      '127.0.0.1',
-      '--persist-to',
-      join(directory, 'state'),
-    ],
-    { cwd: directory, env, stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  exited = once(worker, 'exit');
-  worker.stdout.on('data', (chunk) => {
-    output = (output + chunk).slice(-5000);
+  const serverRoot = join(root, 'dist/server');
+  const assetsRoot = join(directory, 'client');
+  await cp(join(root, 'dist/client'), assetsRoot, { recursive: true });
+  const modulePaths = (await readdir(serverRoot, { recursive: true }))
+    .filter((path) => /\.m?js$/.test(path) && path !== 'index.js')
+    .sort();
+  // Explicit module contents snapshot the compiled Worker. Miniflare has no
+  // dev file watcher or Wrangler proxy that can restart a POST mid-request.
+  worker = new Miniflare({
+    name: 'ojas-smoke',
+    rootPath: directory,
+    host: '127.0.0.1',
+    port,
+    modulesRoot: serverRoot,
+    modules: await Promise.all(
+      ['index.js', ...modulePaths].map(async (path) => ({
+        type: 'ESModule',
+        path: join(serverRoot, path),
+        contents: await readFile(join(serverRoot, path), 'utf8'),
+      })),
+    ),
+    compatibilityDate: config.compatibility_date,
+    compatibilityFlags: config.compatibility_flags,
+    bindings: {
+      SITE_ORIGIN: origin,
+      CONNECTIONS_ENCRYPTION_KEY: '1'.repeat(64),
+    },
+    d1Databases: { DB: 'ojas-smoke' },
+    d1Persist: join(directory, 'd1'),
+    assets: {
+      directory: assetsRoot,
+      routerConfig: { has_user_worker: true },
+    },
+    unsafeDevRegistryPath: '',
   });
-  worker.stderr.on('data', (chunk) => {
-    output = (output + chunk).slice(-5000);
-  });
-  let ready = false;
-  for (let i = 0; i < 60; i++) {
-    try {
-      const response = await fetch(`${origin}/api/connections`, {
-        headers: { 'oai-authenticated-user-id': 'ojas-smoke-readiness' },
-        signal: AbortSignal.timeout(1500),
-      });
-      if (response.status === 200) {
-        ready = true;
-        break;
-      }
-    } catch {}
-    if (worker.exitCode !== null) break;
-    await delay(500);
+  await worker.ready;
+  const db = await worker.getD1Database('DB');
+  const migrations = (await readdir(join(root, 'drizzle')))
+    .filter((file) => /^\d+.*\.sql$/.test(file))
+    .sort();
+  for (const file of migrations) {
+    const sql = await readFile(join(root, 'drizzle', file), 'utf8');
+    const statements = sql
+      .split('--> statement-breakpoint')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    await db.batch(statements.map((statement) => db.prepare(statement)));
   }
-  if (!ready) throw new Error(`Compiled Worker did not start.\n${output}`);
+  const response = await fetch(`${origin}/api/connections`, {
+    headers: { 'oai-authenticated-user-id': 'ojas-smoke-readiness' },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (response.status !== 200)
+    throw new Error(
+      `Compiled Worker readiness failed (${response.status}): ${await response.text()}`,
+    );
   for (const script of [
     'apple-worker-smoke.mjs',
     'http-smoke.mjs',
@@ -112,13 +103,10 @@ try {
     'workspace-http-smoke.mjs',
   ])
     await run([join(root, 'tests', script)]);
-} catch (error) {
-  console.error(output);
-  throw error;
 } finally {
-  if (worker && worker.exitCode === null) {
-    worker.kill('SIGTERM');
-    await Promise.race([exited, delay(3000)]);
+  try {
+    await worker?.dispose();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
-  await rm(directory, { recursive: true, force: true });
 }
